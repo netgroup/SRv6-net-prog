@@ -1,14 +1,15 @@
-# SR-NFV_connector
+# SFC chaining testbed using srext module
 
 We consider a Service Function Chaining scenario supported by IPv6 Segment Routing. In our scenario, a Service Chain is an ordered set of Virtual Network Functions (VNFs) and each VNF is represented by its IPv6 address. We assume that VNFs are hosted in "NFV nodes". 
 
-The SR-NFV_connector module is used in a Linux NFV node in order to support legacy VNFs (i.e. "SR-unaware" VNFs). 
+In this scenario, the srext module is used in a Linux NFV node in order to support legacy VNFs (i.e. "SR-unaware" VNFs). 
 
-The SR-NFV_connector allows introducing SR-unaware VNFs in a Service Chain implemented with IPv6 Segment Routing. It removes the Segment Routing encapsulation before handing the packets to the VNF and properly reinserts the SR encapsulation to the packets processed by the VNF. 
+The srext module allows introducing SR-unaware VNFs in a Service Chain implemented with IPv6 Segment Routing. It removes the Segment
+Routing encapsulation before handing the packets to the VNF and properly reinserts the SR encapsulation to the packets processed by the VNF. 
 
 ## Chaining of SR-unaware VNFs 
 
-In order to replicate the experiment of chaining of SR-unaware VNFs by using the SR_NFV_Connector, we provide a simple VirtualBox testbed using vagrant.
+In order to replicate the experiment of chaining of SR-unaware VNFs by using the srext module, we provide a simple VirtualBox testbed using vagrant.
 
 The testbed is composed of three Virtual Machines (VMs) that represent SR ingress node, NFV node, and SR egress node: 
 
@@ -16,28 +17,28 @@ The testbed is composed of three Virtual Machines (VMs) that represent SR ingres
 
 **SR egress node:** removes the SR encapsulation and forwards the inner packet toward its final destination. This allows the final destination to correctly process the original packet.
 
-**NFV node:** is capable of processing SR-encapsulated packets and passing them to the SR/VNF connector.
+**NFV node:** is capable of processing SR-encapsulated packets and passing them to the srext module.
 
 The ingress node can also be used to generate traffic (either simple ICMP packets  or by means of iperf), this traffic will be encapsulated in SR packets (with outer header IPv6 header and SRH).
 
 The NFV node has a VNF running inside a network namespace. The VNF is SR-unaware which means that it has to receive the packets without SR encapsulation. 
 
-The SR_NFV_Connector,  which runs as a kernel module, is used to de-encapsulate the packets, by removing the SR encapsulation, before sending them to the VNF.
+The srext module (a Linux kernel module), is used to de-encapsulate the packets, by removing the SR encapsulation, before sending them to the VNF.
 
-The VNF processes the packet (in this scenario the VNF just forwards the packet) and sends it back again to the SR_NFV_Connector which will re-insert the SR encapsulation to the packet before sending it to the egress node.
+The VNF processes the packet (in this scenario the VNF just forwards the packet) and sends it back again to the srext module which will re-insert the SR encapsulation to the packet before sending it to the egress node.
 
 The egress node removes SR encapsulation from packets and sends them towards the final destination.
 
 ### Testbed Setup 
 Before starting, please be sure that you have [vagrant](https://www.vagrantup.com/downloads.html) and [virtualbox](https://www.virtualbox.org/wiki/Downloads) installed on your machine.
 
-Clone the SR-NFV_connector repository in your machine: 
+Clone the srext repository in your machine: 
 
 ```
-$ git clone https://github.com/amsalam20/SR-NFV_connector
-$ cd  SR-NFV_connector
+$ git clone https://github.com/netgroup/SRv6-net-prog
+$ cd  SRv6-net-prog
 ```
-Add the sr_nfv_connector vagrant box:
+Add the srext vagrant box:
 ```
 $ vagrant box add sr-vnf http://cs.gssi.infn.it/files/SFC/sr_nfv_connector.box 
 ```
@@ -45,9 +46,9 @@ Start the testbed:
 ```
 $ vagrant up 
 ```
-It takes a bit of time â€¦. please be patient 
+It takes a bit of time …. please be patient 
 
-#### Verifying functionality of SR-NFV_connector and its ability to de-encapsulate and re-encapsulate packets
+#### Verifying functionality of srext module and its ability to de-encapsulate and re-encapsulate packets
 
 Log into the VM of ingress node: 
 ```
@@ -119,7 +120,7 @@ From the terminal of the ingress VM:
 $ iperf3 -6 -u -c C::2 -l 1024 -b 80M -t 60
 ```
 
-It will run for 60 seconds and after taht you will have a report about throughput, loss,â€¦ etc.
+It will run for 60 seconds and after taht you will have a report about throughput, loss,… etc.
 
 
 ### CPU Utilization
@@ -139,12 +140,10 @@ $ top -b -d 0.1 -n 600 | grep -i "%Cpu(s)"  > cpu_util_log
 ### Comparison to plain SR kernel
 To measure the overhead added by the SR-NFV_connector. You can run the same iperf tests without the SR-NFV_connector and compare the results.
 
-### Unloading SR-NFV_connector
+### Unloading the srext module
 From the terminal of NFV node:
 ```
-$ sudo su 
-$ cd /vagrant/hook 
-$ rmmod hook.ko 
+$ sudo rmmod srext
 ```
 
 ### Notes 
