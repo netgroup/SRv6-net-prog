@@ -1,0 +1,20 @@
+
+srconf hello
+
+srconf north add cccc::2 fw veth3 00:aa:00:62:c6:09
+srconf north add cccc::2 masqfw veth3 00:aa:00:62:c6:09
+
+srconf north add cccc::2 decapfw veth3 00:aa:00:62:c6:09
+srconf north add cccc::2 decapfw auto veth5 00:aa:00:62:c6:09
+
+srconf south add veth5 demasq
+srconf south add veth5 encap auto dddd::2
+srconf south add veth3 encap params.source cccc::2 params.segs bbbb::2,dddd::2,aa::5 params.left 1
+
+srconf north del SID
+srconf south del INTERFACE
+
+srconf north show
+srconf south show
+
+
