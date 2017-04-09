@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # original script to setup the ingress node
+# to be executed as root
 
 #configuration of ingress node interfaces 
 ifconfig eth1 up

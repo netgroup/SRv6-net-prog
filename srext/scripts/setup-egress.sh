@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # original script to setup the egress node
+# to be executed as root
 
 #configuration of egress node interfaces 
 ifconfig lo up
