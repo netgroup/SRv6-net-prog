@@ -272,8 +272,9 @@ int send_to_vnf(struct sk_buff* skb, struct net_device* interf_struct, unsigned 
 
 }
 
-
-/* Main packet processing fucntion : Pre-Routing function */
+/*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
+/* Main packet processing function (pre-Routing function)               */
+/*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 unsigned int sr_pre_routing(void* priv, struct sk_buff* skb, const struct nf_hook_state* state) {
 
 	struct ipv6hdr* iph;
@@ -284,6 +285,8 @@ unsigned int sr_pre_routing(void* priv, struct sk_buff* skb, const struct nf_hoo
 	int ret = -1;
 	struct net_device * local_if_struct;
 	unsigned char local_d_mac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+	
+	/* local copy of the information contained in the table */
 	struct ipv6_sr_hdr * local_sr_header_auto = NULL;
 	int local_operation = 0;
 
@@ -338,12 +341,12 @@ unsigned int sr_pre_routing(void* priv, struct sk_buff* skb, const struct nf_hoo
 
 	}
 
-
+	/* makes a local copy of the information contained in the table*/
 	local_if_struct = north_table[ret].if_struct;
 	//memcpy(&local_if_struct, &north_table[ret].if_struct, sizeof(local_if_struct));
 	memcpy(&local_d_mac, &north_table[ret].d_mac, sizeof(local_d_mac));
 	local_sr_header_auto = north_table[ret].sr_header_auto;
-
+	local_operation = north_table[ret].n_operation;
 
 	read_unlock_bh(&sr_rwlock);
 
@@ -360,48 +363,60 @@ unsigned int sr_pre_routing(void* priv, struct sk_buff* skb, const struct nf_hoo
 
 	srhlen = (srh->hdrlen + 1) << 3;
 	
-	if (srh->nexthdr != NEXTHDR_IPV6){
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "Next header is not IPv6: no SR encap mode)");
-		#endif
-		goto exit_accept;
-	}
-
 	srh->segments_left--;
 	next_hop = srh->segments + srh->segments_left;
 	iph->daddr = *next_hop;
 	iph->hop_limit -=2;
 	memcpy(&outer_iph, iph, sizeof(outer_iph));
 
-//autolearning : now it is done per SID !!
-//	write_lock(&sr_rwlock);
-	/* TODO fix me: lazy way to avoid write lock */
-	#ifdef LAZY_NO_LOCK
-	if ( local_sr_header_auto != NULL)
-		kfree(local_sr_header_auto);
-	local_sr_header_auto = kmalloc(srhlen, GFP_ATOMIC);
-	memcpy(local_sr_header_auto, srh, srhlen);
-	#endif
-//	learn_sr = 0;
-//	write_unlock(&sr_rwlock);
-//end autolearning 
 
-
-
-	trim_encap(skb, srh);
-
-//	if (send_to_vnf(skb, if_struct, d_mac) == 0) 
-	if (send_to_vnf(skb, local_if_struct, local_d_mac) == 0) {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "OK : packet sent to the VNF ");
+	if ( (local_operation & CODE_AUTO ) == CODE_AUTO ) {
+	    //autolearning, it is done per SID 
+	    //write_lock(&sr_rwlock);
+		/* TODO fix me: lazy way to avoid write lock */
+		#ifdef LAZY_NO_LOCK
+		if ( local_sr_header_auto != NULL)
+			kfree(local_sr_header_auto);
+		local_sr_header_auto = kmalloc(srhlen, GFP_ATOMIC);
+		memcpy(local_sr_header_auto, srh, srhlen);
 		#endif
-	} else {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "FAILED sending packet the VNF");
-		#endif		
+	    //learn_sr = 0;
+	    //write_unlock(&sr_rwlock);
+	    //end autolearning 
 	}
-		
-	goto exit_stolen;
+
+	if ( (local_operation & CODE_DECAPFW ) == CODE_DECAPFW ) {
+		//TODO If I've understood well, now this works only for SR encap mode 
+		if (srh->nexthdr != NEXTHDR_IPV6){
+			#ifdef PER_PACKET_INFO
+			debug_printk("%s \n", "Next header is not IPv6: no SR encap mode)");
+			#endif
+			goto exit_accept;
+		}
+
+		trim_encap(skb, srh);
+
+	    //if (send_to_vnf(skb, if_struct, d_mac) == 0) 
+		if (send_to_vnf(skb, local_if_struct, local_d_mac) == 0) {
+			#ifdef PER_PACKET_INFO
+			debug_printk("%s \n", "OK : packet sent to the VNF ");
+			#endif
+		} else {
+			#ifdef PER_PACKET_INFO
+			debug_printk("%s \n", "FAILED sending packet the VNF");
+			#endif		
+		}
+			
+		goto exit_stolen;
+	}
+
+	if ( (local_operation & CODE_MASQFW ) == CODE_MASQFW ) {
+
+	}
+
+	if ( (local_operation & CODE_DEINSFW ) == CODE_DEINSFW ) {
+
+	}
 
 
 egress:
@@ -426,10 +441,23 @@ egress:
 	debug_printk("%s \n", "Packet coming from a registered interface");
 	#endif
 
-	if ( (local_operation & CODE_AUTO) != 0 ) {
+	if ( local_operation == (CODE_ENCAP|CODE_AUTO) ) {
 		if (local_sr_header_auto != NULL)
 			rencap(skb, local_sr_header_auto);
 	}
+
+	if ( local_operation == CODE_ENCAP ) {
+
+	}
+
+	if ( local_operation == CODE_DEMASQ ) {
+
+	}
+
+	if ( local_operation == CODE_INS ) {
+
+	}
+
 
 exit_accept:
 	return NF_ACCEPT;

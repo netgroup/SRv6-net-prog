@@ -157,31 +157,62 @@ static int sr_genl_echo(struct sk_buff *skb, struct genl_info *info){
 	return send_response(info, 1, data);
 }
 
+/* handle add commands */
 static int sr_genl_add(struct sk_buff *skb, struct genl_info *info){
 	int ret = -1;
 	struct genl_msg_data data[1];
+	int operation = 0;
 
 	/*
-	 * These lines extract all the attributes and print them do the dmesg
+	 * These lines extract all the attributes and print them to the dmesg
 	 */
 	struct sr_param attr;
 	extract_sr_attrs(info, &attr);
 	print_attributes(&attr);
 	/**/
 
-	//TODO here the code to handle ADD command
-	// ...
-	// ...
+	if ( attr.iface != NULL && attr.sid != NULL && attr.table !=NULL){
 
-	if (attr.mode !=NULL&& attr.iface != NULL && attr.sid != NULL &&attr.table !=NULL){
+		if ( strncmp(attr.table, NORTH, strlen(attr.table)) == 0 ) {
 
-		if ( strncmp(attr.table, NORTH, strlen(attr.table)) == 0 ){
+			//TODO operation should be evaluated by srconf.c and passed in the netlink message
+			if ( attr.mode !=NULL && strncmp(attr.mode, AUTO, strlen(attr.mode)) == 0 ) {
+				operation = operation | CODE_AUTO;
+			}
+			if ( attr.op1 !=NULL ) {
+				if ( strncmp(attr.op1, OP_DECAPFW, strlen(attr.op1)) == 0 ) {
+					operation = operation | CODE_DECAPFW;
+				}
+				if ( strncmp(attr.op1, OP_MASQFW, strlen(attr.op1)) == 0 ) {
+					operation = operation | CODE_MASQFW;
+				}
+				if ( strncmp(attr.op1, OP_DEINSFW, strlen(attr.op1)) == 0 ) {
+					operation = operation | CODE_DEINSFW;
+				}
+			}
 			
-			ret = bind_sid_north(attr.sid, FIXED_NORTH_OPERATION, attr.iface, attr.mac->oct);
+			ret = bind_sid_north(attr.sid, operation, attr.iface, attr.mac->oct);
 		}
-		if ( strncmp(attr.table, SOUTH, strlen(attr.table)) == 0 )
-			ret = bind_nic_south(attr.iface, FIXED_SOUTH_OPERATION, attr.sid);
+		if ( strncmp(attr.table, SOUTH, strlen(attr.table)) == 0 ) {
+			//TODO operation should be evaluated by srconf.c and passed in the netlink message
+			if ( attr.mode !=NULL && strncmp(attr.mode, AUTO, strlen(attr.mode)) == 0 ) {
+				operation = operation | CODE_AUTO;
+			}
+			if ( attr.op1 !=NULL ) {
+				if ( strncmp(attr.op1, OP_ENCAP, strlen(attr.op1)) == 0 ) {
+					operation = operation | CODE_ENCAP;
+				}
+				if ( strncmp(attr.op1, OP_DEMASQ, strlen(attr.op1)) == 0 ) {
+					operation = operation | CODE_DEMASQ;
+				}
+				if ( strncmp(attr.op1, OP_INS, strlen(attr.op1)) == 0 ) {
+					operation = operation | CODE_INS;
+				}
+			}
 
+			
+			ret = bind_nic_south(attr.iface, FIXED_SOUTH_OPERATION, attr.sid);
+		}
 	}
 	
 	if(ret >= 0)
@@ -192,21 +223,19 @@ static int sr_genl_add(struct sk_buff *skb, struct genl_info *info){
 	return send_response(info, 1, data);
 }
 
+/* handle del commands */
 static int sr_genl_del(struct sk_buff *skb, struct genl_info *info){
 	int ret = -1;
 	struct genl_msg_data data[1];
 
 	/*
-	 * These lines extract all the attributes and print them do the dmesg
+	 * These lines extract all the attributes and print them to the dmesg
 	 */
 	struct sr_param attr;
 	extract_sr_attrs(info, &attr);
 	print_attributes(&attr);
 	/**/
 
-	//TODO here the code to handle DEL command
-	// ...
-	// ...
 	if (attr.sid != NULL && attr.table !=NULL){
 		if ( strncmp(attr.table, NORTH, strlen(attr.table)) == 0 )
 			ret = unbind_sid_north(attr.sid);

@@ -19,15 +19,25 @@
 
 //operations
 #define OP_FW		"fw"
-#define OP_MASQFW	"masqfw"
 
 #define OP_DECAPFW	"decapfw"
 #define CODE_DECAPFW	2
 
+#define OP_MASQFW	"masqfw"
+#define CODE_MASQFW	4
+
 #define OP_DEINSFW	"deinsfw"
+#define CODE_DEINSFW	8
+
+#define OP_ENCAP	"encap"
+#define CODE_ENCAP	2
 
 #define OP_DEMASQ	"demasq"
-#define OP_ENCAP	"encap"
+#define CODE_DEMASQ	4
+
+#define OP_INS	"ins"
+#define CODE_INS	8
+
 
 //operation mode
 #define AUTO		"auto"

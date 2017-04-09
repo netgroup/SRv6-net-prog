@@ -658,6 +658,12 @@ int main(int argc, char **argv){
 				send_add_command();
 				goto end;
 			}
+
+			if(strcmp(params.op1, OP_INS) == 0){
+				send_add_command();
+				//TODO srconf south add veth5 ins segs bbbb::2,dddd::2 left 1
+				goto end;
+			}
 		}
 
 		if(strcmp(params.command, DEL) == 0){
