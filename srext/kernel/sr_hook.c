@@ -477,6 +477,8 @@ int bind_sid_north(const char *sid, const int set_operation, const char *vnf_eth
 	struct in6_addr sid_addr;
     struct net_device * local_if_struct = NULL;
 
+    debug_printk("north operation : %d\n",set_operation);
+
 	if (in6_pton(sid, strlen(sid), sid_addr.s6_addr, -1, NULL) != 1) {
 		ret = -2; /*-2: error in the SID address */
 		goto end;
@@ -550,6 +552,8 @@ int bind_nic_south(const char *vnf_eth, const int set_operation, const char *sid
 	int ret = -1;
 	struct in6_addr sid_addr;
     struct net_device * local_if_struct = NULL;
+
+    debug_printk("south operation : %d\n",set_operation);
 
 	local_if_struct = dev_get_by_name(&init_net, vnf_eth);
 	

@@ -209,9 +209,8 @@ static int sr_genl_add(struct sk_buff *skb, struct genl_info *info){
 					operation = operation | CODE_INS;
 				}
 			}
-
 			
-			ret = bind_nic_south(attr.iface, FIXED_SOUTH_OPERATION, attr.sid);
+			ret = bind_nic_south(attr.iface, operation, attr.sid);
 		}
 	}
 	
