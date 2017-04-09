@@ -1,7 +1,14 @@
 #!/bin/bash
 
-# the module is not inserted
-# please do make and sudo make install
+# this script setups the nfv-node
+# it needs to be called from the srext folder as follows:
+# sudo scripts/nfv-node-setup.sh
+# sudo scripts/nfv-node-setup.sh clean
+
+# it uses the script scripts/add-vnf.sh to add the VNF
+
+# NB srext the module is not compiled nor inserted 
+
 
 IP_NODE_LEFT=AAAA::1/64
 IP_NODE_RIGHT=CCCC::1/64

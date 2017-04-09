@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# original script to setup the ingress node
+
 #configuration of ingress node interfaces 
 ifconfig eth1 up
 ip -6 addr add AAAA::2/64 dev eth1

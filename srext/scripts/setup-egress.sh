@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# original script to setup the egress node
+
 #configuration of egress node interfaces 
 ifconfig lo up
 ifconfig eth1 up

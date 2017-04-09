@@ -1,7 +1,10 @@
 #!/bin/bash
 
-# the module is not inserted
-# please do make and sudo make install
+# this script adds (or cleans) a VNF setting up the interfaces
+# it needs to be called from the srext folder as follows:
+# sudo scripts/add-vnf.sh add NS_NAME IP_NODE_NFV1 MAC_NODE_NFV1 IP_NFV1_NODE MAC_NFV1_NODE
+# sudo scripts/add-vnf.sh clean
+
 
 NS_NAME=$2
 IP_NODE_NFV1=$3
@@ -66,7 +69,5 @@ ip netns exec $NS_NAME ip -6 route add AAAA::/64 via BBBB::1
 ip netns exec $NS_NAME ip -6 route add CCCC::/64 via BBBB::1
 
 fi
-
-
 
 exit

@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# first version of the script to setup the nfv node
+# it used old folder names and module names (see at the end of the script) 
+
 #enble IPv6 forwarding in NFV node 
 echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
 
