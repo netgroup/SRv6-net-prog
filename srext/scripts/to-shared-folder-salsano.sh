@@ -1,9 +1,13 @@
 #! /bin/bash
 
-#copy all the files from the current directory to the shared folder 
-#USED TO SYNC THE FILES IN THE SHARED FOLDER NEEDS WHEN REMOTE UPDATES ARE MADE
+# copy all the files from the current directory to the shared folder 
+# USED TO SYNC THE FILES IN THE SHARED FOLDER 
+# IT IS NEEDED AT THE START OF A DEVELOPMENT SESSION AND WHEN REMOTE UPDATES ARE MADE
 
-cd /media/sf_shared-nfv-node/v01devel/scripts
+LOCAL_FOLDER=/home/sr6/srv6-net-prog/srext
+SHARED_FOLDER=/media/sf_shared-nfv-node/srv6-net-prog
+
+cd $SHARED_FOLDER/scripts
 if [ $? -ne 0 ]
 then
   echo "folder not found, the script has failed"
@@ -11,9 +15,9 @@ then
 fi
 
 rm *
-cp /home/sr6/v0.1-integration/scripts/*.sh .
+cp $LOCAL_FOLDER/scripts/*.sh .
 
-cd /media/sf_shared-nfv-node/v01devel/kernel
+cd $SHARED_FOLDER/kernel
 if [ $? -ne 0 ]
 then
   echo "folder not found, the script has failed"
@@ -21,9 +25,9 @@ then
 fi
 
 rm *
-cp /home/sr6/v0.1-integration/kernel/*.c .
+cp $LOCAL_FOLDER/kernel/*.c .
 
-cd /media/sf_shared-nfv-node/v01devel/tools
+cd $SHARED_FOLDER/tools
 if [ $? -ne 0 ]
 then
   echo "folder not found, the script has failed"
@@ -31,9 +35,9 @@ then
 fi
 
 rm *
-cp /home/sr6/v0.1-integration/tools/*.c .
+cp $LOCAL_FOLDER/tools/*.c .
 
-cd /media/sf_shared-nfv-node/v01devel/include
+cd $SHARED_FOLDER/include
 if [ $? -ne 0 ]
 then
   echo "folder not found, the script has failed"
@@ -41,7 +45,7 @@ then
 fi
 
 rm *
-cp /home/sr6/v0.1-integration/include/*.h .
+cp $LOCAL_FOLDER/include/*.h .
 
 
 
