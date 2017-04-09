@@ -46,7 +46,7 @@ Start the testbed:
 ```
 $ vagrant up 
 ```
-It takes a bit of time �. please be patient 
+It takes a bit of time ... please be patient 
 
 #### Verifying functionality of srext module and its ability to de-encapsulate and re-encapsulate packets
 
@@ -120,7 +120,7 @@ From the terminal of the ingress VM:
 $ iperf3 -6 -u -c C::2 -l 1024 -b 80M -t 60
 ```
 
-It will run for 60 seconds and after taht you will have a report about throughput, loss,� etc.
+It will run for 60 seconds and after taht you will have a report about throughput, loss, ... etc.
 
 
 ### CPU Utilization
