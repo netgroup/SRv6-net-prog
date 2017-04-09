@@ -90,6 +90,12 @@ static void print_mac(char * mac){
 };
 
 
+/*
+*******************************************************************************
+* OPERATIONS ON THE TABLES (MATCH, ADD)
+*******************************************************************************
+*/
+
 //TODO improve the matching efficiency with housekeeping: keep only the first nt_size entries
 int check_match_north (struct in6_addr * sid_addr) {
 	/* we already got the lock */
@@ -191,7 +197,252 @@ int slot_to_add_south (struct net_device * if_struct) {
 	return ret;
 };
 
+/*
+*******************************************************************************
+* PACKET PROCESSING FUNCTIONS
+*******************************************************************************
+*/
 
+
+/* rencap function */
+int rencap(struct sk_buff* skb, struct ipv6_sr_hdr* osrh) {
+	struct ipv6hdr *hdr;
+	struct ipv6_sr_hdr *isrh;
+	int hdrlen, tot_len, err;
+	hdrlen = (osrh->hdrlen + 1) << 3;
+	tot_len = hdrlen + sizeof(*hdr);
+
+	if (unlikely((err = pskb_expand_head(skb, tot_len, 0, GFP_ATOMIC)))) {
+		#ifdef PER_PACKET_INFO
+		debug_printk("%s \n","SREXT module cannot expand head");
+		#endif
+		return err;
+	}
+
+	skb_push(skb, tot_len);
+	skb_reset_network_header(skb);
+	skb_mac_header_rebuild(skb);
+	hdr = ipv6_hdr(skb);
+	memcpy(hdr, &outer_iph, sizeof(struct ipv6hdr));
+	isrh = (void *)hdr + sizeof(*hdr);
+	memcpy(isrh, osrh, hdrlen);
+	#ifdef PER_PACKET_INFO
+	debug_printk("%s \n","Packet coming from the VNF is rencapsulated correctly");
+	#endif
+	return 0;
+}
+
+
+
+/* Remove SR encapsulation in case of encap mode */
+struct sk_buff* trim_encap(struct sk_buff* skb, struct ipv6_sr_hdr* sr_h)
+{
+	int trim_size;
+ 	trim_size = sizeof(struct ipv6hdr) + ((sr_h->hdrlen * 8) + 8);
+	pskb_pull(skb, trim_size);
+	skb_postpull_rcsum(skb, skb_transport_header(skb), trim_size);
+	#ifdef PER_PACKET_INFO
+	debug_printk("%s \n","Packet is decapsulated correctly before being sent to the VNF"); 
+	#endif
+	return skb;
+}
+
+
+/* send_to_VNF function */
+int send_to_vnf(struct sk_buff* skb, struct net_device* interf_struct, unsigned char *dest_mac) {
+
+	//read_lock_bh(&sr_rwlock); //no need to lock as we have copied interf_struct and dest_mac
+	dev_hard_header(skb, skb->dev, ETH_P_IPV6, dest_mac, NULL, skb->len);
+	//read_unlock_bh(&sr_rwlock);
+
+	skb->dev = interf_struct;
+	skb->pkt_type = PACKET_OUTGOING;
+
+	if (dev_queue_xmit(skb) != NET_XMIT_SUCCESS) {
+		#ifdef PER_PACKET_INFO
+		debug_printk("%s \n", "dev_queue_xmit error");
+		#endif
+		return 1;
+	} else {
+		#ifdef PER_PACKET_INFO
+		debug_printk("%s \n", "dev_queue_xmit OK");
+		#endif
+		return 0;
+	}
+
+}
+
+
+/* Main packet processing fucntion : Pre-Routing function */
+unsigned int sr_pre_routing(void* priv, struct sk_buff* skb, const struct nf_hook_state* state) {
+
+	struct ipv6hdr* iph;
+	struct ipv6_sr_hdr* srh;
+	struct ipv6_rt_hdr* routing_header;
+    int srhlen ;
+	struct in6_addr* next_hop = NULL;
+	int ret = -1;
+	struct net_device * local_if_struct;
+	unsigned char local_d_mac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+	struct ipv6_sr_hdr * local_sr_header_auto = NULL;
+	int local_operation = 0;
+
+
+//	printk ("size of net_device struct %zu\n", sizeof(*local_if_struct));
+//  net_device struct size = 2624
+
+	// should't we check if it is an IPv6 packet before casting?
+	// or we registered only for IPv6 packets???
+	iph = (struct ipv6hdr*) skb_network_header(skb);
+
+	/* TODO filter neighbor discovery and other undesired traffic  */
+
+	#ifdef ALL_PACKET_DETAILS
+	debug_printk("%s \n", "IPv6 header fields of packet captured by SR-ext module");
+	debug_printk("ifname      = %s \n", skb->dev->name);
+	debug_printk("payload_len = %u \n", ntohs(iph->payload_len));
+	debug_printk("hop limit   = %u \n", iph->hop_limit);
+	debug_printk("saddr       = %pI6c \n", iph->saddr.s6_addr);
+	debug_printk("daddr       = %pI6c \n", iph->daddr.s6_addr);
+	#endif
+
+	if (iph->nexthdr == NEXTHDR_ICMP) {
+		struct icmp6hdr* icmpv6h;
+		icmpv6h = (struct icmp6hdr*) icmp6_hdr(skb);
+		if (!( (icmpv6h->icmp6_type == ICMPV6_ECHO_REQUEST) || (icmpv6h->icmp6_type == ICMPV6_ECHO_REPLY) ) )
+			goto exit_accept;  
+	} 
+	/* ingress section  */
+
+//now it first checks for SIDs in the north table 	 
+//SS: I think we should first check for interfaces in the south table
+
+//ingress:
+	if (iph->nexthdr != NEXTHDR_ROUTING)
+		goto egress;
+	
+
+	routing_header = (struct ipv6_rt_hdr*) skb_transport_header(skb);
+	if (routing_header->type != 4 ) { 
+		/*not a SR packet TODO : should we remove this check ???? */
+		goto exit_accept;
+	}
+
+
+	read_lock_bh(&sr_rwlock);
+	ret = check_match_north (&iph->daddr);
+	if (ret<0) {
+		/* we did not find a matching sid */
+		read_unlock_bh(&sr_rwlock);
+		goto exit_accept;
+
+	}
+
+
+	local_if_struct = north_table[ret].if_struct;
+	//memcpy(&local_if_struct, &north_table[ret].if_struct, sizeof(local_if_struct));
+	memcpy(&local_d_mac, &north_table[ret].d_mac, sizeof(local_d_mac));
+	local_sr_header_auto = north_table[ret].sr_header_auto;
+
+
+	read_unlock_bh(&sr_rwlock);
+
+	srh = (struct ipv6_sr_hdr*) skb_transport_header(skb);
+	
+	#ifdef ALL_PACKET_DETAILS
+	debug_printk("%s \n", "SRH of IPv6 packet captured by SR-ext module"); 
+	debug_printk("nexthdr       =  %u \n", srh->nexthdr);
+	debug_printk("hdrlen        =  %u \n", srh->hdrlen);
+	debug_printk("type          =  %u \n", srh->type);
+	debug_printk("segments_left =  %u \n", srh->segments_left);
+	debug_printk("first_segment =  %u \n", srh->first_segment);
+	#endif
+
+	srhlen = (srh->hdrlen + 1) << 3;
+	
+	if (srh->nexthdr != NEXTHDR_IPV6){
+		#ifdef PER_PACKET_INFO
+		debug_printk("%s \n", "Next header is not IPv6: no SR encap mode)");
+		#endif
+		goto exit_accept;
+	}
+
+	srh->segments_left--;
+	next_hop = srh->segments + srh->segments_left;
+	iph->daddr = *next_hop;
+	iph->hop_limit -=2;
+	memcpy(&outer_iph, iph, sizeof(outer_iph));
+
+//autolearning : now it is done per SID !!
+//	write_lock(&sr_rwlock);
+	/* TODO fix me: lazy way to avoid write lock */
+	#ifdef LAZY_NO_LOCK
+	if ( local_sr_header_auto != NULL)
+		kfree(local_sr_header_auto);
+	local_sr_header_auto = kmalloc(srhlen, GFP_ATOMIC);
+	memcpy(local_sr_header_auto, srh, srhlen);
+	#endif
+//	learn_sr = 0;
+//	write_unlock(&sr_rwlock);
+//end autolearning 
+
+
+
+	trim_encap(skb, srh);
+
+//	if (send_to_vnf(skb, if_struct, d_mac) == 0) 
+	if (send_to_vnf(skb, local_if_struct, local_d_mac) == 0) {
+		#ifdef PER_PACKET_INFO
+		debug_printk("%s \n", "OK : packet sent to the VNF ");
+		#endif
+	} else {
+		#ifdef PER_PACKET_INFO
+		debug_printk("%s \n", "FAILED sending packet the VNF");
+		#endif		
+	}
+		
+	goto exit_stolen;
+
+
+egress:
+	read_lock_bh(&sr_rwlock);
+	if (st_size == 0){
+		read_unlock_bh(&sr_rwlock);
+		goto exit_accept;
+	}
+//  if (skb->dev->ifindex != if_struct->ifindex /*|| memcmp(iph->flow_lbl,outer_iph.flow_lbl, 3) != 0*/ ){
+	ret = check_match_south (skb->dev);
+	if (ret<0) {
+		/* we did not find a matching interface */
+		read_unlock_bh(&sr_rwlock);
+		#ifdef PER_PACKET_INFO
+		debug_printk("%s \n", "Packet NOT from a registered interface ");
+		#endif
+		goto exit_accept;
+	}
+	local_operation=south_table[ret].s_operation;
+	read_unlock_bh(&sr_rwlock);
+	#ifdef PER_PACKET_INFO
+	debug_printk("%s \n", "Packet coming from a registered interface");
+	#endif
+
+	if ( (local_operation & CODE_AUTO) != 0 ) {
+		if (local_sr_header_auto != NULL)
+			rencap(skb, local_sr_header_auto);
+	}
+
+exit_accept:
+	return NF_ACCEPT;
+exit_stolen:
+	return NF_STOLEN;
+
+}
+
+/*
+*******************************************************************************
+* CLI OPERATIONS CALLED BY SR_GENL.C 
+*******************************************************************************
+*/
 
 int bind_sid_north(const char *sid, const int set_operation, const char *vnf_eth, const unsigned char *mac){
 	int ret = -1; /* returns <0 if the operation did not succeed, otherwise the slot added is returned*/
@@ -397,73 +648,6 @@ int unbind_sid_vnf(const char* sid, const char *vnf_eth){
 	return -1;
 }
 
-/* rencap function */
-int rencap(struct sk_buff* skb, struct ipv6_sr_hdr* osrh) {
-	struct ipv6hdr *hdr;
-	struct ipv6_sr_hdr *isrh;
-	int hdrlen, tot_len, err;
-	hdrlen = (osrh->hdrlen + 1) << 3;
-	tot_len = hdrlen + sizeof(*hdr);
-
-	if (unlikely((err = pskb_expand_head(skb, tot_len, 0, GFP_ATOMIC)))) {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n","SREXT module cannot expand head");
-		#endif
-		return err;
-	}
-
-	skb_push(skb, tot_len);
-	skb_reset_network_header(skb);
-	skb_mac_header_rebuild(skb);
-	hdr = ipv6_hdr(skb);
-	memcpy(hdr, &outer_iph, sizeof(struct ipv6hdr));
-	isrh = (void *)hdr + sizeof(*hdr);
-	memcpy(isrh, osrh, hdrlen);
-	#ifdef PER_PACKET_INFO
-	debug_printk("%s \n","Packet coming from the VNF is rencapsulated correctly");
-	#endif
-	return 0;
-}
-
-/* Remove SR encapsulation in case of encap mode */
-struct sk_buff* trim_encap(struct sk_buff* skb, struct ipv6_sr_hdr* sr_h)
-{
-	int trim_size;
- 	trim_size = sizeof(struct ipv6hdr) + ((sr_h->hdrlen * 8) + 8);
-	pskb_pull(skb, trim_size);
-	skb_postpull_rcsum(skb, skb_transport_header(skb), trim_size);
-	#ifdef PER_PACKET_INFO
-	debug_printk("%s \n","Packet is decapsulated correctly before being sent to the VNF"); 
-	#endif
-	return skb;
-}
-
-
-/* send_to_VNF function */
-int send_to_vnf(struct sk_buff* skb, struct net_device* interf_struct, unsigned char *dest_mac) {
-
-	//read_lock_bh(&sr_rwlock); //no need to lock as we have copied interf_struct and dest_mac
-	dev_hard_header(skb, skb->dev, ETH_P_IPV6, dest_mac, NULL, skb->len);
-	//read_unlock_bh(&sr_rwlock);
-
-	skb->dev = interf_struct;
-	skb->pkt_type = PACKET_OUTGOING;
-
-	if (dev_queue_xmit(skb) != NET_XMIT_SUCCESS) {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "dev_queue_xmit error");
-		#endif
-		return 1;
-	} else {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "dev_queue_xmit OK");
-		#endif
-		return 0;
-	}
-
-}
-
-
 int show_north (char *dst, size_t size) {
 	//TODO IMPLEMENT CHECK ON SIZE
 	int char_used = 0;
@@ -546,170 +730,12 @@ int show_south (char *dst, size_t size) {
 }
 
 
-/* Pre-Routing function */
-unsigned int sr_pre_routing(void* priv, struct sk_buff* skb, const struct nf_hook_state* state) {
 
-	struct ipv6hdr* iph;
-	struct ipv6_sr_hdr* srh;
-	struct ipv6_rt_hdr* routing_header;
-    int srhlen ;
-	struct in6_addr* next_hop = NULL;
-	int ret = -1;
-	struct net_device * local_if_struct;
-	unsigned char local_d_mac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-	struct ipv6_sr_hdr * local_sr_header_auto = NULL;
-	int local_operation = 0;
-
-
-//	printk ("size of net_device struct %zu\n", sizeof(*local_if_struct));
-//  net_device struct size = 2624
-
-	// should't we check if it is an IPv6 packet before casting?
-	// or we registered only for IPv6 packets???
-	iph = (struct ipv6hdr*) skb_network_header(skb);
-
-	/* TODO filter neighbor discovery and other undesired traffic  */
-
-	#ifdef ALL_PACKET_DETAILS
-	debug_printk("%s \n", "IPv6 header fields of packet captured by SR-ext module");
-	debug_printk("ifname      = %s \n", skb->dev->name);
-	debug_printk("payload_len = %u \n", ntohs(iph->payload_len));
-	debug_printk("hop limit   = %u \n", iph->hop_limit);
-	debug_printk("saddr       = %pI6c \n", iph->saddr.s6_addr);
-	debug_printk("daddr       = %pI6c \n", iph->daddr.s6_addr);
-	#endif
-
-	if (iph->nexthdr == NEXTHDR_ICMP) {
-		struct icmp6hdr* icmpv6h;
-		icmpv6h = (struct icmp6hdr*) icmp6_hdr(skb);
-		if (!( (icmpv6h->icmp6_type == ICMPV6_ECHO_REQUEST) || (icmpv6h->icmp6_type == ICMPV6_ECHO_REPLY) ) )
-			goto exit_accept;  
-	} 
-	/* ingress section  */
-
-//now it first checks for SIDs in the north table 	 
-//SS: I think we should first check for interfaces in the south table
-
-//ingress:
-	if (iph->nexthdr != NEXTHDR_ROUTING)
-		goto egress;
-	
-
-	routing_header = (struct ipv6_rt_hdr*) skb_transport_header(skb);
-	if (routing_header->type != 4 ) { 
-		/*not a SR packet TODO : should we remove this check ???? */
-		goto exit_accept;
-	}
-
-
-	read_lock_bh(&sr_rwlock);
-	ret = check_match_north (&iph->daddr);
-	if (ret<0) {
-		/* we did not find a matching sid */
-		read_unlock_bh(&sr_rwlock);
-		goto exit_accept;
-
-	}
-
-
-	local_if_struct = north_table[ret].if_struct;
-	//memcpy(&local_if_struct, &north_table[ret].if_struct, sizeof(local_if_struct));
-	memcpy(&local_d_mac, &north_table[ret].d_mac, sizeof(local_d_mac));
-	local_sr_header_auto = north_table[ret].sr_header_auto;
-
-
-	read_unlock_bh(&sr_rwlock);
-
-	srh = (struct ipv6_sr_hdr*) skb_transport_header(skb);
-	
-	#ifdef ALL_PACKET_DETAILS
-	debug_printk("%s \n", "SRH of IPv6 packet captured by SR-ext module"); 
-	debug_printk("nexthdr       =  %u \n", srh->nexthdr);
-	debug_printk("hdrlen        =  %u \n", srh->hdrlen);
-	debug_printk("type          =  %u \n", srh->type);
-	debug_printk("segments_left =  %u \n", srh->segments_left);
-	debug_printk("first_segment =  %u \n", srh->first_segment);
-	#endif
-
-	srhlen = (srh->hdrlen + 1) << 3;
-	
-	if (srh->nexthdr != NEXTHDR_IPV6){
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "Next header is not IPv6: no SR encap mode)");
-		#endif
-		goto exit_accept;
-	}
-
-	srh->segments_left--;
-	next_hop = srh->segments + srh->segments_left;
-	iph->daddr = *next_hop;
-	iph->hop_limit -=2;
-	memcpy(&outer_iph, iph, sizeof(outer_iph));
-
-//autolearning : now it is done per SID !!
-//	write_lock(&sr_rwlock);
-	/* TODO fix me: lazy way to avoid write lock */
-	#ifdef LAZY_NO_LOCK
-	if ( local_sr_header_auto != NULL)
-		kfree(local_sr_header_auto);
-	local_sr_header_auto = kmalloc(srhlen, GFP_ATOMIC);
-	memcpy(local_sr_header_auto, srh, srhlen);
-	#endif
-//	learn_sr = 0;
-//	write_unlock(&sr_rwlock);
-//end autolearning 
-
-
-
-	trim_encap(skb, srh);
-
-//	if (send_to_vnf(skb, if_struct, d_mac) == 0) 
-	if (send_to_vnf(skb, local_if_struct, local_d_mac) == 0) {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "OK : packet sent to the VNF ");
-		#endif
-	} else {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "FAILED sending packet the VNF");
-		#endif		
-	}
-		
-	goto exit_stolen;
-
-
-egress:
-	read_lock_bh(&sr_rwlock);
-	if (st_size == 0){
-		read_unlock_bh(&sr_rwlock);
-		goto exit_accept;
-	}
-//  if (skb->dev->ifindex != if_struct->ifindex /*|| memcmp(iph->flow_lbl,outer_iph.flow_lbl, 3) != 0*/ ){
-	ret = check_match_south (skb->dev);
-	if (ret<0) {
-		/* we did not find a matching interface */
-		read_unlock_bh(&sr_rwlock);
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "Packet NOT from a registered interface ");
-		#endif
-		goto exit_accept;
-	}
-	local_operation=south_table[ret].s_operation;
-	read_unlock_bh(&sr_rwlock);
-	#ifdef PER_PACKET_INFO
-	debug_printk("%s \n", "Packet coming from a registered interface");
-	#endif
-
-	if ( (local_operation & CODE_AUTO) != 0 ) {
-		if (local_sr_header_auto != NULL)
-			rencap(skb, local_sr_header_auto);
-	}
-
-exit_accept:
-	return NF_ACCEPT;
-exit_stolen:
-	return NF_STOLEN;
-
-}
+/*
+*******************************************************************************
+* INITIALIZATION AND EXIT FUNCTIONS
+*******************************************************************************
+*/
 
 
 /* Initialization function */
