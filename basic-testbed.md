@@ -9,7 +9,7 @@ Routing encapsulation before handing the packets to the VNF and properly reinser
 
 ## Chaining of SR-unaware VNFs 
 
-In order to replicate the experiment of chaining of SR-unaware VNFs by using the srext module, we provide a simple VirtualBox testbed using vagrant.
+In order to replicate the experiment of chaining of SR-unaware VNFs by using the srext module, we provide a simple VirtualBox testbed using Vagrant.
 
 The testbed is composed of three Virtual Machines (VMs) that represent SR ingress node, NFV node, and SR egress node: 
 
