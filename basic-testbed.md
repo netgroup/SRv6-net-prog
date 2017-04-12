@@ -1,4 +1,4 @@
-# SFC chaining using srext module - A Vagrant/VirtualBox testbed
+# VNF chaining using srext module - A Vagrant/VirtualBox testbed
 
 We consider a Service Function Chaining scenario supported by IPv6 Segment Routing. In our scenario, a Service Chain is an ordered set of Virtual Network Functions (VNFs) and each VNF is represented by its IPv6 address. We assume that VNFs are hosted in "NFV nodes". 
 
