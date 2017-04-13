@@ -6,7 +6,7 @@ The “SRv6 Network Programming” is a new paradigm (see the [IETF draft](https
 
 We are implementing the SRv6 Network Programming model in the _srext_ Linux kernel module, supported by a CLI based configuration application called _srconf_. See our public [code repository](https://github.com/netgroup/SRv6-net-prog).
 
-We implemented a [[testbed for a SFC use case (chaining of SR-unaware VNFs using SRv6)|testbed-basic]]. The testbed can be easily replicated using Vagrant/VirtualBox.
+We implemented a [testbed for a SFC use case (chaining of SR-unaware VNFs using SRv6)](testbed-basic.md). The testbed can be easily replicated using Vagrant/VirtualBox.
 
 ### Scientific papers, technical reports
 
