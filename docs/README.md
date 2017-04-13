@@ -21,8 +21,8 @@ To appear in: 3rd IEEE Conference on Network Softwarization (NetSoft 2017), Bolo
 
 ### Useful links
 
-- Cisco-maintained website about Segment Routing: http://www.segment-routing.net
-- Linux kernel implementation of IPv6 Segment Routing: http://www.segment-routing.org
+- Cisco-maintained website about Segment Routing: [http://www.segment-routing.net](http://www.segment-routing.net)
+- Linux kernel implementation of IPv6 Segment Routing: [http://www.segment-routing.org](http://www.segment-routing.org)
 - IETF draft "[SRv6 Network Programming](https://tools.ietf.org/html/draft-filsfils-spring-srv6-network-programming)", IETF 98 (March 2017) presentation [slides](https://www.ietf.org/proceedings/98/slides/slides-98-spring-srv6-network-programming-00.pdf)
 
 
