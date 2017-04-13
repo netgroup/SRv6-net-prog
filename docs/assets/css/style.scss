@@ -2,3 +2,10 @@
 ---
 
 @import "{{ site.theme }}";
+#project_tagline {
+    background: rgba(0, 0, 0, 0) none repeat scroll 0 0;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 300;
+    text-shadow: 0 0 10px #111;
+}
