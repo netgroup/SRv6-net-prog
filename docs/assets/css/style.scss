@@ -3,7 +3,7 @@
 
 @import "{{ site.theme }}";
 #header_wrap {
-    background: rgba(0, 0, 0, 0) -moz-linear-gradient(center top , rgb(0, 90, 90), #212121) repeat scroll 0 0;
+    background: rgba(0, 0, 0, 0) -moz-linear-gradient(center top , rgba(0, 90, 90, 1), #212121) repeat scroll 0 0;
 }
 form {
     background: #f2f2f2 none repeat scroll 0 0;
