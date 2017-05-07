@@ -17,7 +17,7 @@ To appear in: 3rd IEEE Conference on Network Softwarization (NetSoft 2017), Bolo
 
 ### Design documents
 
-- "[Linux implementation of SRv6 Network Programming model](https://www.dropbox.com/s/ly6qnod8as8dnj0/linux-SRv6-net-prog-design-shared.pdf?dl=1)"
+- "[Linux implementation of SRv6 Network Programming model](https://www.dropbox.com/s/fk4o8xecbmuoeji/linux-SRv6-net-prog-design-shared.pdf?dl=1)"
 
 ### Useful links
 
