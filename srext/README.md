@@ -17,9 +17,9 @@ $ sudo scripts/nfv-node-setup.sh
 
 ## Usage
 ```
-$ srconf south add node-vnf1-ve0 encap auto bbbb::2
-$ srconf north add bbbb::2 decapfw auto node-vnf1-ve0 00:00:00:00:00:22
-$ srconf north del bbbb::2
+$ srconf srdev add node-vnf1-ve0 encap auto bbbb::2
+$ srconf localsid add bbbb::2 decapfw auto node-vnf1-ve0 00:00:00:00:00:22
+$ srconf localsid del bbbb::2
 ```
 
 ## Usage (to enter in the namespace and run tcpdump inside)

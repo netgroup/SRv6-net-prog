@@ -9,8 +9,8 @@
 #define GENETLINK_H_
 
 //tables
-#define NORTH "north"
-#define SOUTH "south"
+#define NORTH "localsid"
+#define SOUTH "srdev"
 
 //commands
 #define ADD		"add"
