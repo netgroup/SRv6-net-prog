@@ -1,4 +1,4 @@
-/*
+/**
  *  SR-IPv6 implementation
  *
  *  Author:
@@ -11,14 +11,12 @@
  *      2 of the License, or (at your option) any later version.
  */
 
-
-
 #ifndef _UAPI_LINUX_SEG6_H
 #define _UAPI_LINUX_SEG6_H
 
 #define IPV6_SRCRT_TYPE_4       4       /* Segment Routing with IPv6 */
- 
-/*
+
+/**
  * SRH
  */
 struct ipv6_sr_hdr {

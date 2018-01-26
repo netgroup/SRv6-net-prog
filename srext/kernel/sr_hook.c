@@ -1,13 +1,35 @@
+/**
+ *  SR-IPv6 implementation
+ *
+ *  Authors:
+ *  Stefano Salsano <stefano.salsano@uniroma2.it>
+ *  Ahmed Abdelsalam <ahmed.abdelsalam@gssi.it>
+ *  Giuseppe Siracusano <giu.siracusano@gmail.com>
+ *
+ *
+ *  This program is free software; you can redistribute it and/or
+ *      modify it under the terms of the GNU General Public License
+ *      as published by the Free Software Foundation; either version
+ *      2 of the License, or (at your option) any later version.
+ */
+
 #include <linux/netfilter_ipv4.h>
 #include <linux/inet.h>
 #include <linux/rwlock.h>
 #include <net/protocol.h>
+#include <net/arp.h>
 #include <net/ipv6.h>
+#include <net/ip.h>
 #include <linux/icmpv6.h>
+#include <linux/hashtable.h>
+#include <linux/hash.h>
+#include <net/ip6_route.h>
+
 #include "../include/seg6.h"
 #include "../include/sr_genl.h"
-#include "../include/sr_helper.h"
 #include "../include/sr_hook.h"
+#include "../include/hook_v4.h"
+#include "../include/sr_errno.h"
 
 #define AUTHOR "SREXT"
 #define DESC   "SREXT"
@@ -17,830 +39,2303 @@ MODULE_DESCRIPTION(DESC);
 MODULE_LICENSE("GPL");
 
 #define DEBUG
+
 #ifdef DEBUG
-	#define debug_printk(fmt, args) printk(KERN_DEBUG fmt,args)
-	//print_hex_dump(KERN_INFO, "", DUMP_PREFIX_OFFSET, 16, 1, skb->data, skb->len, true);
+#define debug(fmt, args) dmesg(fmt,args)
+#define debug_err(fmt, args) dmesg_err(fmt,args)
 #else
-	#define debug_printk(fmt, args) /* not debugging: nothing */
+#define debug(fmt, args)     /* not debugging: nothing */
+#define debug_err(fmt, args) /* not debugging: nothing */
 #endif
 
-//#define ALL_PACKET_DETAILS
-//#define PER_PACKET_INFO
+#define TABLE_SIZE 5  // 32 entries
 
-#define NT_MAXSIZE 4
-#define ST_MAXSIZE 4
-
-#define LAZY_NO_LOCK
-
-/* north table entry (including the key) */
-struct nt_entry {
-	int is_set;
-	struct in6_addr vnf_ip;
-	struct net_device * if_struct;
-	int n_operation;
-	unsigned char d_mac[6];
-	#ifdef LAZY_NO_LOCK
-	struct ipv6_sr_hdr *sr_header_auto ;
-	#endif
-
-};
-
-/* south table entry (including the key) */
-struct st_entry {
-	int is_set;
-	struct net_device* if_struct;  /*south table key ... it was called vnf*/
-	int s_operation;
-	struct in6_addr south_sid;
-};
-
-static int nt_size = 0;
-static int st_size = 0;
-
-static int nt_current = 0; /*a pointer to cycle trhough the north table */
-static int st_current = 0; /*a pointer to cycle trhough the south table */
-
-static struct nt_entry north_table [NT_MAXSIZE];
-static struct st_entry south_table [NT_MAXSIZE];
-
+static DEFINE_HASHTABLE(sid_tbl, TABLE_SIZE);    /* localsid table */
+static DEFINE_HASHTABLE(sdev_tbl, TABLE_SIZE);   /* srdev table    */
 static struct nf_hook_ops sr_ops_pre;
-//static struct net_device* if_struct;  /*south table key ... it was called vnf*/
-//static int s_operation;               /*south table operation*/
-//static struct in6_addr south_sid;     /*south table sid for auto*/
-
-static struct ipv6hdr outer_iph;
-//static struct ipv6_sr_hdr *sr_header_auto;
-//int learn_sr = 1;
-//static struct in6_addr vnf_ip;  /*north table key*/
-//static int n_operation;         /*north table operation*/
-
-//struct in6_addr *vnf_sid = NULL; //FOR QUICK AND DIRY NULL CHECK
-unsigned char d_mac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x22};
 
 rwlock_t sr_rwlock;
 
+/***************************************************************************************************
+********************************** SREXT helper functions ******************************************
+***************************************************************************************************/
 
-static void print_mac(char * mac){
-	printk("%02x:%02x:%02x:%02x:%02x:%02x\n",
-			(unsigned char) mac[0],
-			(unsigned char) mac[1],
-			(unsigned char) mac[2],
-			(unsigned char) mac[3],
-			(unsigned char) mac[4],
-			(unsigned char) mac[5]);
-};
-
-
-/*
-*******************************************************************************
-* OPERATIONS ON THE TABLES (MATCH, ADD)
-*******************************************************************************
-*/
-
-//TODO improve the matching efficiency with housekeeping: keep only the first nt_size entries
-int check_match_north (struct in6_addr * sid_addr) {
-	/* we already got the lock */
-	/* check if there is a matching entry*/
-	/*returns -1 if there is no match*/
-	int ret = -1;
-	int i = 0;
-	int ii = 0;
-	for (ii = 0; ii < NT_MAXSIZE; ii++) {
-		i = (nt_current + ii ) % NT_MAXSIZE;
-		if (north_table[i].is_set!=0 && ipv6_addr_cmp(&north_table[i].vnf_ip, sid_addr) == 0 ) {
-			ret = i;
-			break;
-		}
-	}	
-	return ret;
-};
-
-int check_empty_north (struct in6_addr * sid_addr) {
-	/* we already got the lock */
-	/* check if there is an empty slot */
-	int ret = -1;
-	int i = 0;
-	int ii = 0;
-	for (ii = 0; ii < NT_MAXSIZE; ii++) {
-		i = (nt_current + 1 + ii ) % NT_MAXSIZE;
-		if (north_table[i].is_set == 0) {
-			ret = i;
-			break;
-		}
-	}
-	return ret;
-};
-
-int slot_to_add_north (struct in6_addr * sid_addr) {
-	/* we already got the lock */
-	/* returns -1 if it is not possible to add (or modify) the sid*/
-	/* returns the slot number (>=0) if there is a match or an empty slot */
-	int ret = -1;
-
-	/* check if there is a matching entry*/
-	ret = check_match_north (sid_addr);
-
-	if (ret == -1 ) {
-		/* check if there is an empty slot */
-		ret = check_empty_north (sid_addr);
-	}
-	return ret;
-};
-
-//TODO improve the matching efficiency with housekeeping: keep only the first nt_size entries
-int check_match_south (struct net_device * if_struct) {
-	/* we already got the lock */
-	/* check if there is a matching entry*/
-	/*returns -1 if there is no match*/
-	int ret = -1;
-	int i = 0;
-	int ii = 0;
-	for (ii = 0; ii < ST_MAXSIZE; ii++) {
-		i = (st_current + ii ) % ST_MAXSIZE;
-		//the match is currently based on the interface index: is it correct and safe ???
-		if (south_table[i].is_set!=0 && south_table[i].if_struct->ifindex == if_struct->ifindex ) {
-			ret = i;
-			break;
-		}
-	}	
-	return ret;
-};
-
-int check_empty_south (struct net_device * if_struct) {
-	/* we already got the lock */
-	/* check if there is an empty slot */
-	int ret = -1;
-	int i = 0;
-	int ii = 0;
-	for (ii = 0; ii < ST_MAXSIZE; ii++) {
-		i = (st_current + 1 + ii ) % ST_MAXSIZE;
-		if (south_table[i].is_set == 0) {
-			ret = i;
-			break;
-		}
-	}
-	return ret;
-};
-
-int slot_to_add_south (struct net_device * if_struct) {
-	/* we already got the lock */
-	/* returns -1 if it is not possible to add (or modify) the sid*/
-	/* returns the slot number (>=0) if there is a match or an empty slot */
-	int ret = -1;
-
-	/* check if there is a matching entry*/
-	ret = check_match_south (if_struct);
-
-	if (ret == -1 ) {
-		/* check if there is an empty slot */
-		ret = check_empty_south (if_struct);
-	}
-	return ret;
-};
-
-/*
-*******************************************************************************
-* PACKET PROCESSING FUNCTIONS
-*******************************************************************************
-*/
-
-
-/* rencap function */
-int rencap(struct sk_buff* skb, struct ipv6_sr_hdr* osrh) {
-	struct ipv6hdr *hdr;
-	struct ipv6_sr_hdr *isrh;
-	int hdrlen, tot_len, err;
-	hdrlen = (osrh->hdrlen + 1) << 3;
-	tot_len = hdrlen + sizeof(*hdr);
-
-	if (unlikely((err = pskb_expand_head(skb, tot_len, 0, GFP_ATOMIC)))) {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n","SREXT module cannot expand head");
-		#endif
-		return err;
-	}
-
-	skb_push(skb, tot_len);
-	skb_reset_network_header(skb);
-	skb_mac_header_rebuild(skb);
-	hdr = ipv6_hdr(skb);
-	memcpy(hdr, &outer_iph, sizeof(struct ipv6hdr));
-	isrh = (void *)hdr + sizeof(*hdr);
-	memcpy(isrh, osrh, hdrlen);
-	#ifdef PER_PACKET_INFO
-	debug_printk("%s \n","Packet coming from the VNF is rencapsulated correctly");
-	#endif
-	return 0;
-}
-
-
-
-/* Remove SR encapsulation in case of encap mode */
-struct sk_buff* trim_encap(struct sk_buff* skb, struct ipv6_sr_hdr* sr_h)
+/**
+ * dmesg()
+ * Wrapping printk to add module name
+ */
+void dmesg( const char * format, ...)
 {
-	int trim_size;
- 	trim_size = sizeof(struct ipv6hdr) + ((sr_h->hdrlen * 8) + 8);
-	pskb_pull(skb, trim_size);
-	skb_postpull_rcsum(skb, skb_transport_header(skb), trim_size);
-	#ifdef PER_PACKET_INFO
-	debug_printk("%s \n","Packet is decapsulated correctly before being sent to the VNF"); 
-	#endif
-	return skb;
+    va_list ap;
+    va_start(ap, format);
+    printk("[SREXT]");
+    vprintk(format, ap);
+    va_end(ap);
 }
 
-
-/* send_to_VNF function */
-int send_to_vnf(struct sk_buff* skb, struct net_device* interf_struct, unsigned char *dest_mac) {
-
-	//read_lock_bh(&sr_rwlock); //no need to lock as we have copied interf_struct and dest_mac
-	dev_hard_header(skb, skb->dev, ETH_P_IPV6, dest_mac, NULL, skb->len);
-	//read_unlock_bh(&sr_rwlock);
-
-	skb->dev = interf_struct;
-	skb->pkt_type = PACKET_OUTGOING;
-
-	if (dev_queue_xmit(skb) != NET_XMIT_SUCCESS) {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "dev_queue_xmit error");
-		#endif
-		return 1;
-	} else {
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "dev_queue_xmit OK");
-		#endif
-		return 0;
-	}
-
+/**
+ * dmesg_err()
+ * Wrapping printk to add module name and error string
+ */
+void dmesg_err( const char * format, ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    printk("[SREXT][Error]");
+    vprintk(format, ap);
+    va_end(ap);
 }
 
-/*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
-/* Main packet processing function (pre-Routing function)               */
-/*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
-unsigned int sr_pre_routing(void* priv, struct sk_buff* skb, const struct nf_hook_state* state) {
+/**
+ * print_mac()
+ * Prints a MAC address to a string
+ * @mac: MAC address to be printed
+ * @out: output string
+ */
 
-	struct ipv6hdr* iph;
-	struct ipv6_sr_hdr* srh;
-	struct ipv6_rt_hdr* routing_header;
-    int srhlen ;
-	struct in6_addr* next_hop = NULL;
-	int ret = -1;
-	struct net_device * local_if_struct;
-	unsigned char local_d_mac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-	
-	/* local copy of the information contained in the table */
-	struct ipv6_sr_hdr * local_sr_header_auto = NULL;
-	int local_operation = 0;
+static void print_mac(unsigned char *mac, char *out)
+{
+    sprintf(out + strlen(out), "%02x:%02x:%02x:%02x:%02x:%02x\n",
+            (unsigned char) mac[0],
+            (unsigned char) mac[1],
+            (unsigned char) mac[2],
+            (unsigned char) mac[3],
+            (unsigned char) mac[4],
+            (unsigned char) mac[5]);
+}
+
+/**
+ * print_nh_mac()
+ * Wrapping print_mac() to print next hop MAC address of a sid
+ * @mac: MAC address to be printed
+ * @out: output string
+ */
+
+static void print_nh_mac(unsigned char *mac, char *out)
+{
+    sprintf(out + strlen(out), "\t Next hop:        ");
+    print_mac(mac, out);
+}
+
+/**
+ * decap2()
+ * Decapsulates outer IPv6 header and it's extensions for L2 traffic encapsulated with T.encaps.L2
+ * @skb: packet buffer
+ * @s6:  localsid table entry
+ * @innoff: the offset of L2 frame
+ * @srhoff: the offset of SRH
+ * @save: Flag - decides whether to save the decapsulated headers or not
+ */
+
+int decap2(struct sk_buff * skb, struct sid6_info * s6, int innoff, int srhoff, int save)
+{
+    int ret = 0;
+
+    if (!save)
+        goto decap;
+
+    if ((ret = sdev_add(s6->iif, s6->behavior, skb->data, innoff, srhoff)) != 0)
+        goto end;
+decap:
+    pskb_pull(skb, innoff);
+    skb_postpull_rcsum(skb, skb_network_header(skb), innoff);
+end:
+    return ret ;
+}
+
+/**
+ * decap4()
+ * Decapsulates outer IPv6 header and it's extensions for IPv4 traffic encapsulated with T.encaps
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ * @innoff: the offset of innner packet
+ * @srhoff: the offset of SRH
+ * @save: Flag - decides whether to save the decapsulated headers or not
+ */
+
+int decap4(struct sk_buff * skb, struct sid6_info * s6, int innoff, int srhoff, int save)
+{
+    int ret = 0;
+    struct iphdr *iph;
+    char * err_msg = "decap4 - ";
+
+    if (!save)
+        goto decap;
+
+    if ((ret = sdev_add(s6->iif, s6->behavior, skb->data, innoff, srhoff)) != 0)
+        goto end;
+decap:
+    pskb_pull(skb, innoff);
+    skb_postpull_rcsum(skb, skb_network_header(skb), innoff);
+    skb_reset_network_header(skb);
+    iph = ip_hdr(skb);
+
+    if (iph->ttl <= 1) {
+        debug_err("%s inner packet can not be forwarded, ttl is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        return -1;
+    }
+
+    iph->ttl --;
+    ip_send_check(iph);
+    skb->protocol = htons(ETH_P_IP);
+    skb_set_transport_header(skb, iph->ihl * 4);
+end:
+    return ret ;
+}
+
+/**
+ * decap6()
+ * Decapsulates outer IPv6 header and it's extensions for IPv6 traffic encapsulated with T.encaps
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ * @innoff: the offset of innner packet
+ * @srhoff: the offset of SRH
+ * @save: Flag - decides whether to save the decapsulated headers or not
+ */
+
+int decap6(struct sk_buff * skb, struct sid6_info * s6, int innoff, int srhoff, int save)
+{
+    int ret = 0;
+    struct ipv6hdr *ip6h;
+    char * err_msg = "decap6 - ";
+
+    if (!save)
+        goto decap;
+
+    if ((ret = sdev_add(s6->iif, s6->behavior, skb->data, innoff, srhoff)) != 0)
+        goto end;
+decap:
+    pskb_pull(skb, innoff);
+    skb_postpull_rcsum(skb, skb_network_header(skb), innoff);
+    skb_reset_network_header(skb);
+
+    ip6h = ipv6_hdr(skb);
+    if (ip6h->hop_limit <= 1) {
+        debug_err("%s inner packet can not be forwarded, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        return -1;
+    }
+
+    ip6h->hop_limit --;
+    skb_set_transport_header(skb, sizeof(struct ipv6hdr));
+end:
+    return ret ;
+}
+
+/**
+ * encap()
+ * Re-adds saved SRv6 encapsulation to packets coming from SR-unaware VNF
+ * used by some SRv6 begaviors (e.g., End.AD4, End.EAD4, End.AD6, and End.EAD6)
+ * @skb: packet buffer
+ * @sdev: srdev table entry
+ */
+
+int encap(struct sk_buff * skb, struct sdev_info * sdev)
+{
+    int err;
+    if (unlikely((err = pskb_expand_head(skb, sdev->len, 0, GFP_ATOMIC)))) {
+        printk(KERN_INFO "%s \n", "SREXT cannot expand head - nomem ");
+        return err;
+    }
+
+    skb_push(skb, sdev->len);
+    memcpy(skb->data, sdev->data, sdev->len);
+    skb_reset_network_header(skb);
+    skb_mac_header_rebuild(skb);
+    ipv6_hdr(skb)->payload_len = htons(skb->len - sizeof(struct ipv6hdr));
+    skb_set_transport_header(skb, sdev->srhoff);
+    skb_postpush_rcsum(skb, skb->data, sdev->len);
+    return 0;
+}
+
+/**
+ * xcon2()
+ * Cross-connects to a layer-2 adjacency
+ * used by some SRv6 behaviors (e.g., End.DX2)
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
+
+int xcon2(struct sk_buff* skb, struct sid6_info *s6)
+{
+    struct net_device* dev;
+    char * err_msg = "xcon2 - ";
+
+    if (s6->oif == NULL) {
+        debug_err("%s Can't send to NULL \n", err_msg);
+        return -1;
+    }
+
+    dev = dev_get_by_name(&init_net, s6->oif);
+    if (!dev) {
+        debug_err("%s no such interface \n", err_msg);
+        return -1;
+    }
+
+    skb->dev = dev;
+    skb->pkt_type = PACKET_OUTGOING;
+    skb_reset_mac_header(skb);
+    skb_reset_network_header(skb);
+    update_counters(s6, skb->len, 1);
+    if (dev_queue_xmit(skb) != NET_XMIT_SUCCESS)
+        return -1;
+
+    return 0;
+}
+
+/**
+ * xcon4()
+ * Cross-connects to a IPv4 layer-3 adjacency
+ * used by some SRv6 behaviors (e.g., End.AD4, End.EDA4, End.DX4, etc.)
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
+
+int xcon4(struct sk_buff * skb, struct sid6_info * s6)
+{
+    struct net_device* dev;
+    struct neighbour *neigh;
+    const struct hh_cache *hh;
+    u32 nexthop;
+    char * err_msg = "xcon6 - ";
+
+    if (s6->oif == NULL) {
+        debug_err("%s Can't send to NULL \n", err_msg);
+        return -1;
+    }
+
+    dev = dev_get_by_name(&init_net, s6->oif);
+    if (!dev) {
+        debug_err("%s no such interface \n", err_msg);
+        return -1;
+    }
+
+    skb->dev = dev;
+    skb->pkt_type = PACKET_OUTGOING;
+    if (s6->mc)
+        goto mac;
+
+    nexthop = (__force u32) (s6->nh_ip.s_addr);
+    neigh = __ipv4_neigh_lookup_noref(dev, nexthop);
+    if (unlikely(!neigh))
+        neigh = __neigh_create(&arp_tbl, &s6->nh_ip, dev, false);
+
+    if (!IS_ERR(neigh)) {
+        update_counters(s6, skb->len, 1);
+        hh = &neigh->hh;
+        if ((neigh->nud_state & NUD_CONNECTED) && hh->hh_len)
+            return neigh_hh_output(hh, skb);
+        else
+            return neigh->output(neigh, skb);
+    }
+
+mac:
+    dev_hard_header(skb, skb->dev, ETH_P_IP, s6->nh_mac, NULL, skb->len);
+    update_counters(s6, skb->len, 1);
+    if (dev_queue_xmit(skb) != NET_XMIT_SUCCESS)
+        return -1;
+
+    return 0;
+}
+
+/**
+* xcon6()
+* Cross-connects to a IPv6 layer-3 adjacency
+* used by some SRv6 behaviors (e.g., End.AD6, End.EAD6, End.AM, End.X, End.DX6, etc.)
+* @skb: packet buffer
+* @s6 : localsid table entry
+*/
+
+int xcon6(struct sk_buff * skb, struct sid6_info * s6)
+{
+    struct net_device* dev;
+    struct neighbour *neigh;
+    const struct hh_cache *hh;
+    char * err_msg = "xcon6 - ";
+
+    if (s6->oif == NULL) {
+        debug_err("%s Can't send to NULL \n", err_msg);
+        return -1;
+    }
+
+    dev = dev_get_by_name(&init_net, s6->oif);
+    if (!dev) {
+        debug_err("%s no such interface \n", err_msg);
+        return -1;
+    }
+    skb->dev = dev;
+    skb->pkt_type = PACKET_OUTGOING;
+    if (s6->mc)
+        goto mac;
+
+    /*
+     * using Linux Neighbouring Subsystem to get MAC address of the next hop
+     * similar to ip6_finish_output2() in /net/ipv6/ip6_output.c
+     */
+
+    neigh = __ipv6_neigh_lookup_noref(dev, &s6->nh_ip6);
+    if (unlikely(!neigh))
+        neigh = __neigh_create(&nd_tbl, &s6->nh_ip6, dev, false);
+
+    if (!IS_ERR(neigh)) {
+        update_counters(s6, skb->len, 1);
+        hh = &neigh->hh;
+        if ((neigh->nud_state & NUD_CONNECTED) && hh->hh_len)
+            return neigh_hh_output(hh, skb);
+        else
+            return neigh->output(neigh, skb);
+    }
+
+mac:
+    dev_hard_header(skb, skb->dev, ETH_P_IPV6, s6->nh_mac, NULL, skb->len);
+    update_counters(s6, skb->len, 1);
+    if (dev_queue_xmit(skb) != NET_XMIT_SUCCESS)
+        return -1;
+
+    return 0;
+}
+
+/***************************************************************************************************
+******************************** Operations on tables **********************************************
+***************************************************************************************************/
+
+/**
+ * sid_lookup()
+ * Lookup function into localsid table
+ * @sid: SRv6 SID to be found
+ * Returns a pointer to the sid6_info (NULL if SID not found)
+ */
+
+struct sid6_info *sid_lookup(struct in6_addr sid)
+{
+    u32 key;
+    struct sid6_info *s6;
+
+    key = ipv6_addr_hash(&sid);
+    hash_for_each_possible_rcu(sid_tbl, s6, hnode, key) {
+        if (ipv6_addr_cmp(&s6->sid, &sid) == 0) {
+            return s6;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * sdev_lookup()
+ * Lookup function into srdev table
+ * @ifname: interface to be found
+ * Returns a pointer to sdev_info (NULL if interface not found)
+ */
+
+struct sdev_info * sdev_lookup(char* ifname)
+{
+    u32 key;
+    struct sdev_info *sdev;
+
+    key = jhash(ifname, strlen(ifname), 0) ;
+    hash_for_each_possible_rcu(sdev_tbl, sdev, hnode, key) {
+        if (strcmp(sdev->iif, ifname) == 0) {
+            return sdev;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * update_counters()
+ * Updates counters of a localsid table entry
+ * @s6: localsid table entry
+ * @good: decides whether to update good or bad counters
+ * @len: payload length of the packet triggered this update
+ */
+
+int update_counters(struct sid6_info * s6, int len, int good)
+{
+    write_lock_bh(&sr_rwlock);
+    if (good) {
+        s6->good_pkts ++;
+        s6->good_bytes += len;
+        goto end;
+    }
+    s6->bad_pkts  ++;
+    s6->bad_bytes += len;
+end:
+    write_unlock_bh(&sr_rwlock);
+    return 0;
+}
+
+/**
+ * sdev_add()
+ * Adds an entry to srdev table
+ * used by some SRv6 functions (e.g., End.AD4, End.EAD4, End.AD6, End.EAD6, and End.AM)
+ * @ifname: source interface
+ * @behavior: SRv6 behavior
+ * @buf: data buffer to be saved in memory
+ * @size: number of bytes to be saved
+ * @srhoff: offset of SRH in the buf
+ */
+
+int sdev_add(char* ifname, int behavior, void *buf , int size, int srhoff)
+{
+    int ret = 0;
+    u32 hash_key;
+    char * iif;
+    void * data;
+    struct sdev_info *sdev, *temp;
+    char * err_msg = "sdev_add - ";
+
+    temp = sdev_lookup(ifname) ;
+    if (temp != NULL ) {
+        if (behavior == END_AM_CODE)
+            return 0;
+        if (memcmp(temp->data, buf, size) == 0)
+            return 0;
+    }
+
+    sdev = kmalloc(sizeof(*sdev), GFP_ATOMIC);
+    if (!sdev) {
+        debug_err("%s could not allocate memory \n", err_msg);
+        return NOMEM;
+    }
+
+    data  = kmalloc(size, GFP_ATOMIC);
+    if (!data) {
+        debug_err("%s could not allocate memory \n", err_msg);
+        ret = NOMEM;
+        goto err;
+    }
+
+    iif = kmalloc(strlen(ifname), GFP_ATOMIC);
+    if (!iif) {
+        debug_err("%s could not allocate memory \n", err_msg);
+        kfree(data);
+        ret =  NOMEM;
+        goto err;
+    }
+
+    memcpy(data, buf, size);
+    strcpy(iif, ifname);
+    sdev->iif = iif;
+    sdev->behavior = behavior;
+    sdev->data = data;
+    sdev->len = size;
+    sdev->srhoff = srhoff;
+
+    switch (behavior) {
+    case END_AD6_CODE:
+        sdev->func = encap;
+        break;
+    case END_AM_CODE:
+        sdev->func = end_am_demasq;
+        break;
+    case END_EAD6_CODE:
+        sdev->func = encap;
+        break;
+    case END_AD4_CODE:
+        sdev->func = encap;
+        break;
+    case END_EAD4_CODE:
+        sdev->func = encap;
+        break;
+    }
+
+    hash_key = jhash(ifname, strlen(ifname), 0);
+    write_lock_bh(&sr_rwlock);
+    hash_add_rcu(sdev_tbl, &sdev->hnode, hash_key);
+    write_unlock_bh(&sr_rwlock);
+    goto end;
+err:
+    kfree(sdev);
+end:
+    return ret ;
+}
+
+/**
+ * add_end()
+ * Adds a localsid with End behavior to my localsid table
+ * [CLI]... "srconf localsid add SID end"
+ * @sid: SRv6 SID
+ * @behavior: SRv6 behavior
+ */
+
+int add_end(const char *sid, const int behavior)
+{
+    int ret = 0;
+    u32 hash_key;
+    struct in6_addr bsid;
+    struct sid6_info *s6;
+    char * err_msg = "add_end - ";
+
+    if (in6_pton(sid, strlen(sid), bsid.s6_addr, -1, NULL) != 1) {
+        debug_err("%s sid is not valid inet6 address \n", err_msg);
+        return INVSID;
+    }
+
+    if (sid_lookup(bsid) != NULL) {
+        debug_err("%s sid exists in my localsid table \n", err_msg);
+        return SIDEXIST;
+    }
+
+    s6 = kmalloc(sizeof(*s6), GFP_ATOMIC);
+    if (!s6) {
+        debug_err("%s could not allocate required memory \n", err_msg);
+        return NOMEM;
+    }
+
+    memcpy(&s6->sid, &bsid, sizeof(struct in6_addr));
+    s6->behavior = behavior;
+    s6->oif = NULL;
+    s6->iif = NULL;
+    s6->good_pkts = 0;
+    s6->good_bytes = 0;
+    s6->bad_pkts = 0;
+    s6->bad_bytes = 0;
+    s6->func = end;
+
+    hash_key = ipv6_addr_hash(&bsid);
+    write_lock_bh(&sr_rwlock);
+    hash_add_rcu(sid_tbl, &s6->hnode, hash_key);
+    write_unlock_bh(&sr_rwlock);
+    return ret;
+}
+EXPORT_SYMBOL(add_end);
+
+/**
+ * add_end_dx2()
+ * Adds a localsid with End.DX2 behavior to my localsid table
+ * {CLI]..."srconf localsid add SID end.dx2 TARGETIF"
+ * @sid: SRv6 SID
+ * @behavior: SRv6 behavior
+ * @oif: target interface
+ */
+
+int add_end_dx2(const char *sid, const int behavior, const char *oif)
+{
+    int ret = 0;
+    u32 hash_key;
+    struct in6_addr bsid;
+    struct sid6_info *s6;
+    char *out_if;
+    char * err_msg = "add_end_dx2 - ";
+
+    if (in6_pton(sid, strlen(sid), bsid.s6_addr, -1, NULL) != 1) {
+        debug_err("%s sid is not valid inet6 address \n", err_msg);
+        return INVSID;
+    }
+
+    if (sid_lookup(bsid) != NULL) {
+        debug_err("%s sid exists in my localsid table \n", err_msg);
+        return SIDEXIST;
+    }
+
+    s6 = kmalloc(sizeof(*s6), GFP_ATOMIC);
+    if (!s6) {
+        debug_err("%s could not allocate required memory \n", err_msg);
+        return NOMEM;
+    }
+
+    out_if = kmalloc(strlen(oif), GFP_ATOMIC);
+    if (!out_if) {
+        debug_err("%s could not allocate memory \n", err_msg);
+        kfree(s6);
+        return NOMEM;
+    }
+
+    strcpy(out_if, oif);
+    memcpy(&s6->sid, &bsid, sizeof(struct in6_addr));
+    s6->behavior = behavior;
+    s6->oif = out_if;
+    s6->iif = NULL;
+    s6->good_pkts  = 0;
+    s6->good_bytes = 0;
+    s6->bad_pkts   = 0;
+    s6->bad_bytes  = 0;
+    s6->func = end_dx2;
+
+    hash_key = ipv6_addr_hash(&bsid);
+    write_lock_bh(&sr_rwlock);
+    hash_add_rcu(sid_tbl, &s6->hnode, hash_key);
+    write_unlock_bh(&sr_rwlock);
+    return ret;
+}
+EXPORT_SYMBOL(add_end_dx2);
+
+/**
+ * add_end_x()
+ * Adds localsid with End.X or End.DX6 behavior to my localsid table
+ * [CLI]..."srconf localsid add SID {end.x | end.dx6} NEXTHOP6 TARGETIF"
+ * @sid: SRv6 SID
+ * @behavior: SRv6 behavior
+ * @nh_ip6: IPv6 address of next hop
+ * @mac: MAC address of next hop
+ * @oif: target interface
+ */
+
+int add_end_x(const char *sid, const int behavior, const char *nh_ip6, const unsigned char *mac,
+              const char *oif)
+{
+    int ret = 0;
+    u32 hash_key;
+    struct in6_addr bsid;
+    struct sid6_info *s6;
+    char *out_if;
+    char * err_msg = "add_end_x - ";
+
+    if (in6_pton(sid, strlen(sid), bsid.s6_addr, -1, NULL) != 1) {
+        debug_err("%s sid is not valid inet6 address \n", err_msg);
+        return INVSID;
+    }
+
+    if (sid_lookup(bsid) != NULL) {
+        debug_err("%s sid exists in my localsid table \n", err_msg);
+        return SIDEXIST;
+    }
+
+    s6 = kmalloc(sizeof(*s6), GFP_ATOMIC);
+    if (!s6) {
+        debug_err("%s could not allocate required memory \n", err_msg);
+        return NOMEM;
+    }
+
+    if (nh_ip6 != NULL) {
+        if (in6_pton(nh_ip6, strlen(nh_ip6), s6->nh_ip6.s6_addr, -1, NULL) != 1) {
+            debug_err("%s next hop is not valid inet6 address \n", err_msg);
+            ret = INVNEXTHOP6;
+            goto err;
+        }
+        s6->mc = false;
+    } else {
+        memcpy(&s6->nh_mac, mac, 6);
+        s6->mc = true ;
+    }
+
+    out_if = kmalloc(strlen(oif), GFP_ATOMIC);
+    if (!out_if) {
+        printk(KERN_INFO "%s could not allocate memory \n", err_msg);
+        ret = NOMEM;
+        goto err;
+    }
+
+    strcpy(out_if, oif);
+    memcpy(&s6->sid, &bsid, sizeof(struct in6_addr));
+    s6->behavior = behavior;
+    s6->oif = out_if;
+    s6->iif = NULL;
+    s6->good_pkts  = 0;
+    s6->good_bytes = 0;
+    s6->bad_pkts   = 0;
+    s6->bad_bytes  = 0;
+
+    switch (behavior) {
+    case END_X_CODE:
+        s6->func = end_x;
+        break;
+    case END_DX6_CODE:
+        s6->func = end_dx6;
+        break;
+    }
+
+    hash_key = ipv6_addr_hash(&bsid);
+    write_lock_bh(&sr_rwlock);
+    hash_add_rcu(sid_tbl, &s6->hnode, hash_key);
+    write_unlock_bh(&sr_rwlock);
+    goto end;
+
+err:
+    kfree(s6);
+
+end:
+    return ret;
+}
+EXPORT_SYMBOL(add_end_x);
+
+/**
+ * add_end_dx4()
+ * Adds a localsid with End.DX4 behavior to my localsid table
+ * [CLI]... "srconf localsid add SID end.dx4 NEXTHOP4 TARGETIF"
+ * @sid: SRv6 SID
+ * @behavior: SRv6 behavior
+ * @nh_ip: IPv4 address of next hop
+ * @mac: MAC address of next hop
+ * @oif: target interface
+ */
+
+int add_end_dx4(const char *sid, const int behavior, const char *nh_ip,
+                const unsigned char *mac, const char *oif)
+{
+    int ret = 0;
+    u32 hash_key;
+    struct in6_addr bsid;
+    struct sid6_info *s6;
+    char *out_if;
+    char * err_msg = "add_end_dx4 - ";
+
+    if (in6_pton(sid, strlen(sid), bsid.s6_addr, -1, NULL) != 1) {
+        debug_err( "%s sid is not valid inet6 address \n", err_msg);
+        return INVSID;
+    }
+
+    if (sid_lookup(bsid) != NULL) {
+        debug_err( "%s sid exists in my localsid table \n", err_msg);
+        return SIDEXIST;
+    }
+
+    s6 = kmalloc(sizeof(*s6), GFP_ATOMIC);
+    if (!s6) {
+        debug_err( "%s could not allocate required memory \n", err_msg);
+        return NOMEM;
+    }
+
+    if (nh_ip != NULL) {
+        if (in4_pton(nh_ip, strlen(nh_ip), (u8 *) &s6->nh_ip.s_addr, -1, NULL) != 1) {
+            debug_err( "%s next hop is not valid inet address \n", err_msg);
+            ret = INVNEXTHOP4;
+            goto err;
+        }
+        s6->mc = false ;
+    } else {
+        memcpy(&s6->nh_mac, mac, 6);
+        s6->mc = true;
+    }
+
+    out_if = kmalloc(strlen(oif), GFP_ATOMIC);
+    if (!out_if) {
+        debug_err("%s could not allocate memory \n", err_msg);
+        ret =  NOMEM;
+        goto err;
+    }
+
+    strcpy(out_if, oif);
+    memcpy(&s6->sid, &bsid, sizeof(struct in6_addr));
+    s6->behavior = behavior;
+    s6->oif = out_if;
+    s6->iif = NULL;
+    s6->good_pkts  = 0;
+    s6->good_bytes = 0;
+    s6->bad_pkts   = 0;
+    s6->bad_bytes  = 0;
+    s6->func = end_dx4;
+
+    hash_key = ipv6_addr_hash(&bsid);
+    write_lock_bh(&sr_rwlock);
+    hash_add_rcu(sid_tbl, &s6->hnode, hash_key);
+    write_unlock_bh(&sr_rwlock);
+    goto end;
+
+err:
+    kfree(s6);
+
+end:
+    return ret;
+}
+EXPORT_SYMBOL(add_end_dx4);
+
+/**
+ * add_end_ad4()
+ * Adds a localsid with End.AD4 or End.EAD4 behavior to my localsid table
+ * CLI --> "srconf localsid add SID {end.ad4 | end.ead4} NEXHTHOP4 TARGETIF SOURCEIF"
+ * @sid: SRv6 SID
+ * @behavior: SRv6 behavior
+ * @nh_ip: IPv4 address of next hop
+ * @mac: MAC address of next hop
+ * @oif: target interface
+ * @iif: source interface
+ */
+
+int add_end_ad4(const char *sid, const int behavior, const char *nh_ip,
+                const unsigned char *mac, const char *oif, const char* iif)
+{
+    int ret = 0;
+    u32 hash_key;
+    struct in6_addr bsid;
+    struct sid6_info *s6;
+    char *out_if, *in_if;
+    char * err_msg = "add_end_ad4 - ";
+
+    if (in6_pton(sid, strlen(sid), bsid.s6_addr, -1, NULL) != 1) {
+        debug_err("%s sid is not valid inet6 address \n", err_msg);
+        return INVSID;
+    }
+
+    if (sid_lookup(bsid) != NULL) {
+        debug_err("%s sid exists in my localsid table \n", err_msg);
+        return SIDEXIST;
+    }
+
+    s6 = kmalloc(sizeof(*s6), GFP_ATOMIC);
+    if (!s6) {
+        debug_err("%s could not allocate required memory \n", err_msg);
+        return NOMEM;
+    }
+
+    if (nh_ip != NULL) {
+        if (in4_pton(nh_ip, strlen(nh_ip), (u8 *) &s6->nh_ip.s_addr, -1, NULL) != 1) {
+            debug_err("%s next hop is not valid inet address \n", err_msg);
+            ret =  INVNEXTHOP4;
+            goto err;
+        }
+        s6->mc = false;
+    } else {
+        memcpy(&s6->nh_mac, mac, 6);
+        s6->mc = true;
+    }
+
+    out_if = kmalloc(strlen(oif), GFP_ATOMIC);
+    if (!out_if) {
+        debug_err("%s could not allocate memory \n", err_msg);
+        ret =  NOMEM;
+        goto err;
+    }
+
+    in_if = kmalloc(strlen(iif), GFP_ATOMIC);
+    if (!in_if) {
+        debug_err("%s could not allocate memory \n", err_msg);
+        ret =  NOMEM;
+        kfree(out_if);
+        goto err;
+    }
+
+    strcpy(in_if, iif);
+    strcpy(out_if, oif);
+    memcpy(&s6->sid, &bsid, sizeof(struct in6_addr));
+    s6->behavior = behavior;
+    s6->oif = out_if;
+    s6->iif = in_if;
+    s6->good_pkts  = 0;
+    s6->good_bytes = 0;
+    s6->bad_pkts   = 0;
+    s6->bad_bytes  = 0;
+
+    switch (behavior) {
+    case END_AD4_CODE:
+        s6->func = end_ad4;
+        break;
+    case END_EAD4_CODE:
+        s6->func = end_ead4;
+        break;
+    default:
+        break;
+    }
+
+    hash_key = ipv6_addr_hash(&bsid);
+    write_lock_bh(&sr_rwlock);
+    hash_add_rcu(sid_tbl, &s6->hnode, hash_key);
+    write_unlock_bh(&sr_rwlock);
+    goto end;
+
+err:
+    kfree(s6);
+
+end:
+    return ret;
+}
+EXPORT_SYMBOL(add_end_ad4);
+
+/**
+ * add_end_ad6()
+ * Adds a localsid with End.AD6, End.EAD6, or End.AM  behavior to my localsid table
+ * [CLI]..."srconf localsid add SID {End.ad6 | End.ead6 | End.am } NEXHTHOP6 TARGETIF SOURCEIF"
+ * @sid: SRv6 SID
+ * @behavior: SRv6 behavior
+ * @nh_ip: IPv4 address of next hop
+ * @mac: MAC address of next hop
+ * @oif: target interface
+ * @iif: source interface
+ */
+
+int add_end_ad6(const char *sid, const int behavior, const char *nh_ip6,
+                const unsigned char *mac, const char *oif, const char* iif)
+{
+    int ret = 0;
+    u32 hash_key;
+    struct in6_addr bsid;
+    struct sid6_info *s6;
+    char *out_if, *in_if;
+    struct net_device *out, *in;
+
+    char * err_msg = "add_end_ad6 - ";
+
+    if (in6_pton(sid, strlen(sid), bsid.s6_addr, -1, NULL) != 1) {
+        debug_err("%s sid is not valid inet6 address \n", err_msg);
+        return INVSID;
+    }
+
+    if (sid_lookup(bsid) != NULL) {
+        debug_err("%s localsid already exists.", err_msg);
+        return SIDEXIST;
+    }
+
+    out = dev_get_by_name(&init_net, oif);
+    if (!out) {
+        debug_err("%s invalid target interface\n", err_msg);
+        return INVNEXTHOP6;
+    }
+
+    in = dev_get_by_name(&init_net, iif);
+    if (!in) {
+        debug_err("%s invalid source interface \n", err_msg);
+        return INVNEXTHOP6;
+    }
+
+    s6 = kmalloc(sizeof(*s6), GFP_ATOMIC);
+    if (!s6) {
+        debug_err("%s could not allocate required memory \n", err_msg);
+        return NOMEM;
+    }
+
+    if (nh_ip6 == NULL) {
+        memcpy(&s6->nh_mac, mac, 6);
+        s6->mc = true;
+        goto loc_sid;
+    }
+
+    if (in6_pton(nh_ip6, strlen(nh_ip6), s6->nh_ip6.s6_addr, -1, NULL) != 1) {
+        debug_err("%s next hop is not valid inet6 address \n", err_msg);
+        ret = INVNEXTHOP6;
+        goto err;
+    }
+    s6->mc = false;
+
+loc_sid:
+    out_if = kmalloc(strlen(oif), GFP_ATOMIC);
+    if (!out_if) {
+        debug_err("%s could not allocate memory \n", err_msg);
+        ret =  NOMEM;
+        goto err;
+    }
+
+    in_if = kmalloc(strlen(iif), GFP_ATOMIC);
+    if (!in_if) {
+        debug_err("%s could not allocate memory \n", err_msg);
+        ret =  NOMEM;
+        kfree(out_if);
+        goto err;
+    }
+
+    strcpy(in_if, iif);
+    strcpy(out_if, oif);
+    memcpy(&s6->sid, &bsid, sizeof(struct in6_addr));
+    s6->behavior = behavior;
+    s6->oif = out_if;
+    s6->iif = in_if;
+    s6->good_pkts  = 0;
+    s6->good_bytes = 0;
+    s6->bad_pkts  = 0;
+    s6->bad_bytes = 0;
+
+    switch (behavior) {
+    case END_AD6_CODE:
+        s6->func = end_ad6;
+        break;
+    case END_EAD6_CODE:
+        s6->func = end_ead6;
+        break;
+    case END_AM_CODE:
+        s6->func = end_am_masq;
+        break;
+    default:
+        break;
+    }
+
+    hash_key = ipv6_addr_hash(&bsid);
+    write_lock_bh(&sr_rwlock);
+    hash_add_rcu(sid_tbl, &s6->hnode, hash_key);
+    write_unlock_bh(&sr_rwlock);
+    goto end;
+
+err:
+    kfree(s6);
+
+end:
+    return ret;
+}
+EXPORT_SYMBOL(add_end_ad6);
+
+/**
+ * del_sdev()
+ * Deletes an entry from srdev table
+ * used by del_sid() to for some SRv6 behavior
+ * @ifname: Interface to be deleted
+ */
+
+int del_sdev(char * ifname)
+{
+    u32 key;
+    struct sdev_info *sdev;
+
+    if (hash_empty(sdev_tbl))
+        goto end;
+
+    key = jhash(ifname, strlen(ifname), 0);
+    hash_for_each_possible_rcu(sdev_tbl, sdev, hnode, key) {
+        if (strcmp(sdev->iif, ifname) == 0) {
+            hash_del_rcu(&sdev->hnode);
+            kfree(sdev->data);
+            kfree(sdev->iif);
+            kfree(sdev);
+        }
+    }
+
+end:
+    return 0;
+}
+
+/**
+ * del_sid()
+ * Deletes a localsid from my localsid table
+ * [CLI]..."srconf localsid del SID"
+ * @sid: SID to be deleted
+ * it calls del_sdev(), for some SRv6 behaviors, to delete the associated srdev entry
+ */
+
+int del_sid(const char *sid)
+{
+    int ret = 0;
+    struct in6_addr to_del;
+    struct sid6_info *s6;
+    char * err_msg = "del_sid - ";
+
+    write_lock_bh(&sr_rwlock);
+
+    if (in6_pton(sid, strlen(sid), to_del.s6_addr, -1, NULL) != 1) {
+        debug_err("%s sid is not valid inet6 address.\n", err_msg);
+        ret = INVSID;
+        goto end;
+    }
+
+    if (hash_empty(sid_tbl)) {
+        debug_err("%s localsid table is empty. \n", err_msg);
+        ret = EMPSIDTABLE;
+        goto end;
+    }
+
+    s6 = sid_lookup(to_del);
+
+    if (s6 == NULL ) {
+        debug_err("%s sid not found in my localsid table. \n", err_msg);
+        ret =  NOSID;
+        goto end;
+    }
+
+    switch (s6->behavior) {
+    case END_AM_CODE:
+    case END_AD4_CODE:
+    case END_AD6_CODE:
+    case END_EAD4_CODE:
+    case END_EAD6_CODE:
+        del_sdev(s6->iif);
+        break;
+    default:
+        break;
+    }
+
+    hash_del_rcu(&s6->hnode);
+    kfree(s6->oif);
+    kfree(s6->iif);
+    kfree(s6);
+end:
+    write_unlock_bh(&sr_rwlock);
+    return ret ;
+}
+EXPORT_SYMBOL (del_sid);
+
+/**
+ * flush_sdev_tbl()
+ * Deletes all entries of srdev table
+ * called by flush_sid_tbl()
+ */
+
+int flush_sdev_tbl(void)
+{
+    int ret = 0;
+    int i;
+    struct sdev_info *sdev;
+    struct hlist_node *tmp;
+
+    if (hash_empty(sdev_tbl))
+        goto end;
+
+    hash_for_each_safe(sdev_tbl, i, tmp, sdev, hnode) {
+        hash_del(&sdev->hnode);
+        kfree(sdev->iif);
+        kfree(sdev->data);
+        kfree(sdev);
+    }
+
+end:
+    return ret ;
+}
+
+/**
+ * flush_sid_tbl()
+ * Deletes all entries of my localsid table
+ * [CLI]... "srconf localsid flush"
+ * called by the srext_exit() to free the hash tables before unregistering the kernel module
+ * It calls flush_sdev_tbl() to delete all entires of the srdev table
+ */
+
+int flush_sid_tbl(void)
+{
+    int ret = 0;
+    int i;
+    struct sid6_info *s6;
+    struct hlist_node *tmp;
+
+    char * err_msg = "flush_sid_tbl - ";
+
+    write_lock_bh(&sr_rwlock);
+    if (hash_empty(sid_tbl)) {
+        debug_err("%s localsid table is empty. \n", err_msg);
+        ret = EMPSIDTABLE;
+        goto end;
+    }
+
+    flush_sdev_tbl();
+
+    hash_for_each_safe(sid_tbl, i, tmp, s6, hnode) {
+        hash_del_rcu(&s6->hnode);
+        kfree(s6->oif);
+        kfree(s6->iif);
+        kfree(s6);
+    }
+
+end:
+    write_unlock_bh(&sr_rwlock);
+    return ret;
+}
+EXPORT_SYMBOL(flush_sid_tbl);
+
+/**
+ * show_localsid_all()
+ * Prints all entries of my localsid table
+ * [CLI]..."srconf localsid show"
+ * @dst : message to be sent back to userspace
+ * @size: message size
+ */
+
+int show_localsid_all(char *dst, size_t size)
+{
+    int i;
+    struct sid6_info *s6;
+    char * err_msg = "show_localsid_all - ";
+
+    if (hash_empty(sid_tbl)) {
+        debug_err("%s localsid table is empty. \n", err_msg);
+        return EMPSIDTABLE;
+    }
+
+    strcat(dst, "SRv6 - MY LOCALSID TABLE:\n");
+    strcat(dst, "==================================================\n");
+
+    rcu_read_lock();
+    hash_for_each_rcu(sid_tbl, i, s6, hnode) {
+        sprintf(dst + strlen(dst), "\t SID     :        %pI6c \n", s6->sid.s6_addr);
+
+        switch (s6->behavior) {
+        case END_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END);
+            break;
+
+        case END_DX2_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_DX2);
+            sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+            break;
+
+        case END_X_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_X);
+            if (!s6->mc)
+                sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+            else
+                print_nh_mac(s6->nh_mac, dst);
+            sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+            break;
+
+        case END_DX6_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_DX6);
+            if (!s6->mc)
+                sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+            else
+                print_nh_mac(s6->nh_mac, dst);
+            sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+            break;
+
+        case END_DX4_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_DX4);
+            if (!s6->mc)
+                sprintf(dst + strlen(dst), "\t Next hop:        %pI4 \n", &s6->nh_ip.s_addr);
+            else
+                print_nh_mac(s6->nh_mac, dst);
+            sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+            break;
+
+        case END_AD6_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_AD6);
+            if (!s6->mc)
+                sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+            else
+                print_nh_mac(s6->nh_mac, dst);
+            sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+            sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+            break;
+
+        case END_EAD6_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_EAD6);
+            if (!s6->mc)
+                sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+            else
+                print_nh_mac(s6->nh_mac, dst);
+            sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+            sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+            break;
+
+        case END_AM_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_AM);
+            if (!s6->mc)
+                sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+            else
+                print_nh_mac(s6->nh_mac, dst);
+            sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+            sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+            break;
+
+        case END_AD4_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_AD4);
+            if (!s6->mc)
+                sprintf(dst + strlen(dst), "\t Next hop:        %pI4 \n", &s6->nh_ip.s_addr);
+            else
+                print_nh_mac(s6->nh_mac, dst);
+            sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+            sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+            break;
+
+        case END_EAD4_CODE:
+            sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_EAD4);
+            if (!s6->mc)
+                sprintf(dst + strlen(dst), "\t Next hop:        %pI4 \n", &s6->nh_ip.s_addr);
+            else
+                print_nh_mac(s6->nh_mac, dst);
+            sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+            sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+            break;
+        }
+
+        sprintf(dst + strlen(dst), "\t Good traffic:    [%lld packets : %lld  bytes]\n", \
+                s6->good_pkts, s6->good_bytes);
+        sprintf(dst + strlen(dst), "\t Bad traffic:     [%lld packets : %lld  bytes]\n", \
+                s6->bad_pkts, s6->bad_bytes);
+        sprintf(dst + strlen(dst), "------------------------------------------------------\n");
+    }
+
+    rcu_read_unlock();
+    return 0 ;
+}
+EXPORT_SYMBOL (show_localsid_all);
+
+/**
+ * show_localsid_sid()
+ * Prints a localsid entry from my localsid table
+ * [CLI]... "srconf localsid show SID"
+ * @dst: message to be sent back to userspace
+ * @size: message size
+ * @sid: SID to be shown.
+ */
+
+int show_localsid_sid(char *dst, size_t size, const char *sid)
+{
+    struct sid6_info *s6;
+    struct in6_addr sid6;
+    char * err_msg = "show_localsid_sid - ";
+
+    if (hash_empty(sid_tbl)) {
+        debug_err("%s localsid table is empty. \n", err_msg);
+        return EMPSIDTABLE;
+    }
+
+    if (in6_pton(sid, strlen(sid), sid6.s6_addr, -1, NULL) != 1) {
+        debug_err("%s sid is not a valid inet6 address \n", err_msg);
+        return INVSID;
+    }
+
+    rcu_read_lock();
+
+    s6 = sid_lookup(sid6);
+
+    if (s6 == NULL ) {
+        debug_err("%s sid not found in my localsid table. \n", err_msg);
+        rcu_read_unlock();
+        return NOSID;
+    }
+
+    strcat(dst, "SRv6 - MY LOCALSID TABLE:\n");
+    strcat(dst, "==================================================\n");
+
+    sprintf(dst + strlen(dst), "\t SID     :        %pI6c \n", s6->sid.s6_addr);
+
+    switch (s6->behavior) {
+    case END_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END);
+        break;
+
+    case END_DX2_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_DX2);
+        sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+        break;
+
+    case END_X_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_X);
+        if (!s6->mc)
+            sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+        else
+            print_nh_mac(s6->nh_mac, dst);
+        sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+        break;
+
+    case END_DX6_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_DX6);
+        if (!s6->mc)
+            sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+        else
+            print_nh_mac(s6->nh_mac, dst);
+        sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+        break;
+
+    case END_DX4_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_DX4);
+        if (!s6->mc)
+            sprintf(dst + strlen(dst), "\t Next hop:        %pI4 \n", &s6->nh_ip.s_addr);
+        else
+            print_nh_mac(s6->nh_mac, dst);
+        sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+        break;
+
+    case END_AD6_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_AD6);
+        if (!s6->mc)
+            sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+        else
+            print_nh_mac(s6->nh_mac, dst);
+        sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+        sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+        break;
+
+    case END_EAD6_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_EAD6);
+        if (!s6->mc)
+            sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+        else
+            print_nh_mac(s6->nh_mac, dst);
+        sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+        sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+        break;
+
+    case END_AM_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_AM);
+        if (!s6->mc)
+            sprintf(dst + strlen(dst), "\t Next hop:        %pI6c \n", s6->nh_ip6.s6_addr);
+        else
+            print_nh_mac(s6->nh_mac, dst);
+        sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+        sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+        break;
+
+    case END_AD4_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_AD4);
+        if (!s6->mc)
+            sprintf(dst + strlen(dst), "\t Next hop:        %pI4 \n", &s6->nh_ip.s_addr);
+        else
+            print_nh_mac(s6->nh_mac, dst);
+        sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+        sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+        break;
+
+    case END_EAD4_CODE:
+        sprintf(dst + strlen(dst), "\t Behavior:        %s \n", END_EAD4);
+        if (!s6->mc)
+            sprintf(dst + strlen(dst), "\t Next hop:        %pI4 \n", &s6->nh_ip.s_addr);
+        else
+            print_nh_mac(s6->nh_mac, dst);
+        sprintf(dst + strlen(dst), "\t OIF     :        %s \n", s6->oif);
+        sprintf(dst + strlen(dst), "\t IIF     :        %s \n", s6->iif);
+        break;
+    }
+
+    sprintf(dst + strlen(dst), "\t Good traffic:    [%lld packets : %lld  bytes]\n", \
+            s6->good_pkts, s6->good_bytes);
+    sprintf(dst + strlen(dst), "\t Bad traffic :    [%lld packets : %lld  bytes]\n", \
+            s6->bad_pkts, s6->bad_bytes);
+    sprintf(dst + strlen(dst), "------------------------------------------------------\n");
+
+    rcu_read_unlock();
+    return 0 ;
+}
+EXPORT_SYMBOL (show_localsid_sid);
+
+/**
+ * clear_counters_all()
+ * Clears counters of all sids in my localsid table
+ * [CLI]..."srconf localsid clear-counters"
+ */
+
+int clear_counters_all(void)
+{
+    int ret = 0;
+    unsigned int temp;
+    struct sid6_info *s6;
+    char * err_msg = "clear_all_counters - ";
+
+    write_lock_bh(&sr_rwlock);
+    if (hash_empty(sid_tbl)) {
+        debug_err("%s localsid table is empty. \n", err_msg);
+        ret = EMPSIDTABLE;
+        goto end;
+    }
+
+    hash_for_each_rcu(sid_tbl, temp, s6, hnode) {
+        s6->bad_pkts   = 0;
+        s6->good_pkts  = 0;
+        s6->bad_bytes  = 0;
+        s6->good_bytes = 0;
+    }
+
+end:
+    write_unlock_bh(&sr_rwlock);
+    return ret ;
+}
+EXPORT_SYMBOL(clear_counters_all);
+
+/**
+ * clear_counters_sid()
+ * Clears counters of sid from my localsid table
+ * [CLI]... "srconf localsid clear-counters SID"
+ * @sid: SID to get its counters cleared
+ */
+
+int clear_counters_sid(const char *sid)
+{
+    int ret = 0;
+    struct sid6_info *s6;
+    struct in6_addr clear_sid;
+    char * err_msg = "clear_sid_counters - ";
+
+    write_lock_bh(&sr_rwlock);
+    if (in6_pton(sid, strlen(sid), clear_sid.s6_addr, -1, NULL) != 1) {
+        debug_err("%s sid is not a valid inet6 address \n", err_msg);
+        ret =  INVSID;
+        goto end ;
+    }
+
+    if (hash_empty(sid_tbl)) {
+        debug_err("%s localsid table is empty. \n", err_msg);
+        ret = EMPSIDTABLE;
+        goto end;
+    }
+
+    s6 = sid_lookup(clear_sid);
+
+    if (s6 == NULL) {
+        debug_err("%s sid not found in my localsid table. \n", err_msg);
+        ret =  NOSID;
+        goto end;
+    }
+    s6->bad_pkts   = 0;
+    s6->good_pkts  = 0;
+    s6->bad_bytes  = 0;
+    s6->good_bytes = 0;
+
+end:
+    write_unlock_bh(&sr_rwlock);
+    return ret ;
+}
+EXPORT_SYMBOL(clear_counters_sid);
 
 
-//	printk ("size of net_device struct %zu\n", sizeof(*local_if_struct));
-//  net_device struct size = 2624
+/***************************************************************************************************
+************************************** SRv6 Behaviors  *********************************************
+***************************************************************************************************/
 
-	// should't we check if it is an IPv6 packet before casting?
-	// or we registered only for IPv6 packets???
-	iph = (struct ipv6hdr*) skb_network_header(skb);
+/**
+ * end()
+ * SRv6 Endpoint behavior
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
 
-	/* TODO filter neighbor discovery and other undesired traffic  */
+int end(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int  srh_offset = 0, srh_proto;
+    struct ipv6hdr* iph;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "End - ";
 
-	#ifdef ALL_PACKET_DETAILS
-	debug_printk("%s \n", "IPv6 header fields of packet captured by SR-ext module");
-	debug_printk("ifname      = %s \n", skb->dev->name);
-	debug_printk("payload_len = %u \n", ntohs(iph->payload_len));
-	debug_printk("hop limit   = %u \n", iph->hop_limit);
-	debug_printk("saddr       = %pI6c \n", iph->saddr.s6_addr);
-	debug_printk("daddr       = %pI6c \n", iph->daddr.s6_addr);
-	#endif
+    iph = ipv6_hdr(skb);
+    if (iph->hop_limit <= 1) {
+        debug_err("%s packet can not be forwarded, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    iph->hop_limit --;
 
-	if (iph->nexthdr == NEXTHDR_ICMP) {
-		struct icmp6hdr* icmpv6h;
-		icmpv6h = (struct icmp6hdr*) icmp6_hdr(skb);
-		if (!( (icmpv6h->icmp6_type == ICMPV6_ECHO_REQUEST) || (icmpv6h->icmp6_type == ICMPV6_ECHO_REPLY) ) )
-			goto exit_accept;  
-	} 
-	/* ingress section  */
+    srh_proto = ipv6_find_hdr(skb, &srh_offset, NEXTHDR_ROUTING, NULL, NULL);
+    if (srh_proto != NEXTHDR_ROUTING) {
+        debug_err("%s Packet has no routing extension header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
-//now it first checks for SIDs in the north table 	 
-//SS: I think we should first check for interfaces in the south table
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srh_offset);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
-//ingress:
-	if (iph->nexthdr != NEXTHDR_ROUTING)
-		goto egress;
-	
+    srh = (struct ipv6_sr_hdr*) (skb->data + srh_offset);
+    if ( srh->segments_left <= 0 ) {
+        debug_err("%s End can not be the last sid, segments_left = 0, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
-	routing_header = (struct ipv6_rt_hdr*) skb_transport_header(skb);
-	if (routing_header->type != 4 ) { 
-		/*not a SR packet TODO : should we remove this check ???? */
-		goto exit_accept;
-	}
+    update_counters(s6, skb->len, 1);
+    srh->segments_left--;
+    iph->daddr = *(srh->segments + srh->segments_left);
+    return 1;
 
+drop:
+    kfree(skb);
+    return -1;
+}
 
-	read_lock_bh(&sr_rwlock);
-	ret = check_match_north (&iph->daddr);
-	if (ret<0) {
-		/* we did not find a matching sid */
-		read_unlock_bh(&sr_rwlock);
-		goto exit_accept;
+/**
+ * end_x()
+ * SRv6 Endpoint with Layer-3 cross-connect behavior
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
 
-	}
+int end_x(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int srhoff = 0, srhproto;
+    struct ipv6hdr* iph;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "End.X - ";
 
-	/* makes a local copy of the information contained in the table*/
-	local_if_struct = north_table[ret].if_struct;
-	//memcpy(&local_if_struct, &north_table[ret].if_struct, sizeof(local_if_struct));
-	memcpy(&local_d_mac, &north_table[ret].d_mac, sizeof(local_d_mac));
-	local_sr_header_auto = north_table[ret].sr_header_auto;
-	local_operation = north_table[ret].n_operation;
+    iph = ipv6_hdr(skb);
+    if (iph->hop_limit <= 1) {
+        debug_err("%s packet can not be forwarded, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    iph->hop_limit --;
 
-	read_unlock_bh(&sr_rwlock);
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING) {
+        debug_err("%s Packet has no routing extension header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
-	srh = (struct ipv6_sr_hdr*) skb_transport_header(skb);
-	
-	#ifdef ALL_PACKET_DETAILS
-	debug_printk("%s \n", "SRH of IPv6 packet captured by SR-ext module"); 
-	debug_printk("nexthdr       =  %u \n", srh->nexthdr);
-	debug_printk("hdrlen        =  %u \n", srh->hdrlen);
-	debug_printk("type          =  %u \n", srh->type);
-	debug_printk("segments_left =  %u \n", srh->segments_left);
-	debug_printk("first_segment =  %u \n", srh->first_segment);
-	#endif
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
-	srhlen = (srh->hdrlen + 1) << 3;
-	
-	srh->segments_left--;
-	next_hop = srh->segments + srh->segments_left;
-	iph->daddr = *next_hop;
-	iph->hop_limit -=2;
-	memcpy(&outer_iph, iph, sizeof(outer_iph));
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    if ( srh->segments_left <= 0 ) {
+        debug_err("%s End.X can not be the last SID, segments_left = 0, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    srh->segments_left--;
+    iph->daddr = *(srh->segments + srh->segments_left);
 
+    if (xcon6(skb, s6) != 0)
+        debug_err("%s packet forwarding failed.\n", err_msg);
+    return 0;
 
-	if ( (local_operation & CODE_AUTO ) == CODE_AUTO ) {
-	    //autolearning, it is done per SID 
-	    //write_lock(&sr_rwlock);
-		/* TODO fix me: lazy way to avoid write lock */
-		#ifdef LAZY_NO_LOCK
-		if ( local_sr_header_auto != NULL)
-			kfree(local_sr_header_auto);
-		local_sr_header_auto = kmalloc(srhlen, GFP_ATOMIC);
-		memcpy(local_sr_header_auto, srh, srhlen);
-		#endif
-	    //learn_sr = 0;
-	    //write_unlock(&sr_rwlock);
-	    //end autolearning 
-	}
+drop:
+    kfree(skb);
+    return -1;
+}
 
-	if ( (local_operation & CODE_DECAPFW ) == CODE_DECAPFW ) {
-		//TODO If I've understood well, now this works only for SR encap mode 
-		if (srh->nexthdr != NEXTHDR_IPV6){
-			#ifdef PER_PACKET_INFO
-			debug_printk("%s \n", "Next header is not IPv6: no SR encap mode)");
-			#endif
-			goto exit_accept;
-		}
+/**
+ * end_dx2()
+ * SRv6 Endpoint with decapsulation and Layer-2 cross-connect behavior
+ * @skb: packet buffer buffer
+ * @s6 : ocalsid table entry
+ */
 
-		trim_encap(skb, srh);
+int end_dx2(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int  inneroff = 0, innerproto;
+    int  srhoff = 0, srhproto;
+    struct ipv6hdr* iph;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "End.DX2 - ";
 
-	    //if (send_to_vnf(skb, if_struct, d_mac) == 0) 
-		if (send_to_vnf(skb, local_if_struct, local_d_mac) == 0) {
-			#ifdef PER_PACKET_INFO
-			debug_printk("%s \n", "OK : packet sent to the VNF ");
-			#endif
-		} else {
-			#ifdef PER_PACKET_INFO
-			debug_printk("%s \n", "FAILED sending packet the VNF");
-			#endif		
-		}
-			
-		goto exit_stolen;
-	}
+    iph = ipv6_hdr(skb);
+    if (iph->hop_limit <= 1) {
+        debug_err("%s packet can not be forwarded, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    iph->hop_limit --;
 
-	if ( (local_operation & CODE_MASQFW ) == CODE_MASQFW ) {
+    innerproto = ipv6_find_hdr(skb, &inneroff, -1, NULL, NULL);
 
-	}
+    if (innerproto != NEXTHDR_NONE) {
+        debug_err("%s Packet is not a valid T.encaps.L2 format, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
-	if ( (local_operation & CODE_DEINSFW ) == CODE_DEINSFW ) {
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING)
+        goto decap;
 
-	}
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    if ( srh->segments_left != 0 ) {
+        debug_err("%s segments_left must be zero, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
-egress:
-	read_lock_bh(&sr_rwlock);
-	if (st_size == 0){
-		read_unlock_bh(&sr_rwlock);
-		goto exit_accept;
-	}
-//  if (skb->dev->ifindex != if_struct->ifindex /*|| memcmp(iph->flow_lbl,outer_iph.flow_lbl, 3) != 0*/ ){
-	ret = check_match_south (skb->dev);
-	if (ret<0) {
-		/* we did not find a matching interface */
-		read_unlock_bh(&sr_rwlock);
-		#ifdef PER_PACKET_INFO
-		debug_printk("%s \n", "Packet NOT from a registered interface ");
-		#endif
-		goto exit_accept;
-	}
-	local_operation=south_table[ret].s_operation;
-	read_unlock_bh(&sr_rwlock);
-	#ifdef PER_PACKET_INFO
-	debug_printk("%s \n", "Packet coming from a registered interface");
-	#endif
+decap:
+    if (decap2(skb, s6, inneroff, srhoff, 0) != 0)
+        goto drop;
 
-	if ( local_operation == (CODE_ENCAP|CODE_AUTO) ) {
-		if (local_sr_header_auto != NULL)
-			rencap(skb, local_sr_header_auto);
-	}
+    if (xcon2(skb, s6) != 0)
+        debug_err("%s packet forwarding failed.\n", err_msg);
+    return 0;
+drop:
+    kfree(skb);
+    return -1;
+}
 
-	if ( local_operation == CODE_ENCAP ) {
+/**
+ * end_dx4()
+ * SRv6 Endpoint with decapsulation and IPv4 cross-connect behavior
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
 
-	}
+int end_dx4(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int  inneroff = 0, innerproto;
+    int  srhoff = 0, srhproto;
+    struct ipv6hdr* ip6h;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "End.DX4 - ";
 
-	if ( local_operation == CODE_DEMASQ ) {
+    ip6h = ipv6_hdr(skb);
+    if (ip6h->hop_limit <= 1) {
+        debug_err("%s packet can not be forwarded, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    ip6h->hop_limit --;
 
-	}
+    innerproto = ipv6_find_hdr(skb, &inneroff, -1, NULL, NULL);
+    if (innerproto != IPPROTO_IPIP) {
+        debug_err("%s Packet has no inner IPv4 header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
-	if ( local_operation == CODE_INS ) {
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING)
+        goto decap;
 
-	}
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
 
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    if ( srh->segments_left != 0 ) {
+        debug_err("%s segments_left must be zero, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+decap:
+    if (decap4(skb, s6, inneroff, srhoff, 0) != 0)
+        goto drop;
+
+    if (xcon4(skb, s6) != 0)
+        debug_err("%s packet forwarding failed.\n", err_msg);
+    return 0;
+
+drop:
+    kfree(skb);
+    return -1;
+}
+
+/**
+ * end_dx6()
+ * SRv6 Endpoint with decapsulation and IPv6 cross-connect behavior
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
+
+int end_dx6(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int  inneroff = 0, innerproto;
+    int  srhoff = 0, srhproto;
+    struct ipv6hdr* iph;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "End.DX6 - ";
+
+    iph = ipv6_hdr(skb);
+    if (iph->hop_limit <= 1) {
+        debug_err("%s packet can not be forwarded, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    iph->hop_limit --;
+
+    innerproto = ipv6_find_hdr(skb, &inneroff, -1, NULL, NULL);
+    if (innerproto != IPPROTO_IPV6) {
+        debug_err("%s Packet has no inner IPv6 header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING)
+        goto decap;
+
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    if ( srh->segments_left != 0 ) {
+        debug_err("%s segments_left must be zero, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+decap:
+    if (decap6(skb, s6, inneroff, srhoff, 0) != 0)
+        goto drop;
+
+    if (xcon6(skb, s6) != 0)
+        debug_err("%s packet forwarding failed.\n", err_msg);
+    return 0;
+
+drop:
+    kfree(skb);
+    return -1;
+}
+
+/**
+ * end_ad4()
+ * SRv6 Endpoint to IPv4 SR-unaware APP via dynamic proxy behvior
+ * Decapsulates (removes) SRv6 encapsulation from IPv6 packet before sending packets to a VNF
+ * Creates an entry with the decapsulated headers into srdev table
+ * Attach a callback function "encap()" to the interface where packets come back from the VNF,
+ * The encap callback re-adds the saved headers again to packets back from the VNF
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
+
+int end_ad4(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int  inneroff = 0, innerproto;
+    int  srhoff = 0, srhproto;
+    struct ipv6hdr* ip6h;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "end_ad4- ";
+
+    innerproto = ipv6_find_hdr(skb, &inneroff, -1, NULL, NULL);
+    printk(" ip proto = %d \n ", innerproto);
+    printk(" offset  = %d \n ", inneroff);
+
+    if (innerproto != IPPROTO_IPIP) {
+        debug_err("%s Packet has no inner IPv4 header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING) {
+        debug_err("%s Packet has no routing extension header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    if ( srh->segments_left <= 0 ) {
+        debug_err("%s End.AD4 can not be the last SID, segments_left = 0, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    srh->segments_left--;
+    ip6h = ipv6_hdr(skb);
+
+    if (ip6h->hop_limit <= 1) {
+        debug_err("%s The packet can not be forwarded more, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    ip6h->hop_limit --;
+    ip6h->daddr = *(srh->segments + srh->segments_left);
+
+    if (decap4(skb, s6, inneroff, srhoff, 1) != 0)
+        goto drop;
+
+    if (xcon4(skb, s6) != 0)
+        printk("%s %s \n", err_msg, "packet sent to the VNF !!!!! failed");
+    return 0;
+
+drop:
+    kfree(skb);
+    return -1;
+}
+
+/**
+ * end_ead4()
+ * SRv6 Endpoint to IPv4 SR-unaware APP via dynamic proxy behvior - Extended
+ * An extended End.AD4 behavior that allow having SR-unaware VNFs as last VNF in SFC
+ * Based on the sgement_left value it decides either to save the outer headers or not
+ * If segment_left = 0, then a VNF is the last in chain and outer headers are not saved
+ * Segment_left >0, then outer headers are saved and added back to packets coming back from the VNF
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
+
+int end_ead4(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int  inneroff = 0, innerproto;
+    int  srhoff = 0, srhproto;
+    struct ipv6hdr* iph;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "end_ead6 - ";
+    int save = 0;
+
+    iph = ipv6_hdr(skb);
+    if (iph->hop_limit <= 1) {
+        debug_err("%s The packet can not be forwarded more, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    iph->hop_limit --;
+
+    innerproto = ipv6_find_hdr(skb, &inneroff, -1, NULL, NULL);
+    if (innerproto != IPPROTO_IPIP) {
+        debug_err("%s Packet has no inner IPv4 header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING)
+        goto decap;
+
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    if ( srh->segments_left > 0 ) {
+        save = 1;
+        srh->segments_left--;
+        iph->daddr = *(srh->segments + srh->segments_left);
+    }
+
+decap:
+    if (decap4(skb, s6, inneroff, srhoff, save) != 0)
+        goto drop;
+
+    if (xcon4(skb, s6) != 0)
+        debug_err("%s packet forwarding failed.\n", err_msg);
+    return 0;
+
+drop:
+    kfree(skb);
+    return -1;
+}
+
+/**
+ * end_ad6()
+ * SRv6 Endpoint to IPv6 SR-unaware APP via dynamic proxy behvior
+ * Decapsulates (removes) SRv6 encapsulation from IPv6 packet before sending packets to a VNF
+ * Creates an entry with the decapsulated headers into srdev table
+ * Attach a callback function "encap()" to the interface where packets come back from the VNF,
+ * The encap callback re-adds the saved headers again to packets back from the VNF
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
+
+int end_ad6(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int  inneroff = 0, innerproto;
+    int  srhoff = 0, srhproto;
+    struct ipv6hdr* iph;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "end_ad6 - ";
+
+    innerproto = ipv6_find_hdr(skb, &inneroff, -1, NULL, NULL);
+    if (innerproto != IPPROTO_IPV6) {
+        debug_err("%s Packet has no inner IPv6 header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING) {
+        debug_err("%s Packet has no routing extension header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    if ( srh->segments_left <= 0 ) {
+        debug_err("%s End.AD6 can not be the last SID, segments_left = 0, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    srh->segments_left--;
+    iph = ipv6_hdr(skb);
+
+    if (iph->hop_limit <= 1) {
+        debug_err("%s The packet can not be forwarded more, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    iph->hop_limit --;
+    iph->daddr = *(srh->segments + srh->segments_left);
+
+    if (decap6(skb, s6, inneroff, srhoff, 1) != 0)
+        goto drop;
+
+    if (xcon6(skb, s6) != 0)
+        printk("%s %s \n", err_msg, "packet sent to the VNF !!!!! failed");
+
+    return 0;
+
+drop:
+    kfree(skb);
+    return -1;
+}
+
+/**
+ * end_ead6()
+ * SRv6 Endpoint to IPv6 SR-unaware APP via dynamic proxy behvior - Extended
+ * An extended End.AD6 behavior that allow having SR-unaware VNFs as last VNF in SFC
+ * Based on the sgement_left value it decides either to save the outer headers or not
+ * If segment_left = 0, then a VNF is the last in chain and outer headers are not saved
+ * Segment_left >0, then outer headers are saved and added back to packets coming back from the VNF
+ * @skb: packet buffer
+ * @s6 : localsid table entry
+ */
+
+int end_ead6(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int  inneroff = 0, innerproto;
+    int  srhoff = 0, srhproto;
+    struct ipv6hdr* iph;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "end_ead6 - ";
+    int save = 0;
+
+    iph = ipv6_hdr(skb);
+    if (iph->hop_limit <= 1) {
+        debug_err("%s The packet can not be forwarded more, hop_limit is <= 1, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+    iph->hop_limit --;
+
+    innerproto = ipv6_find_hdr(skb, &inneroff, -1, NULL, NULL);
+    if (innerproto != IPPROTO_IPV6) {
+        debug_err("%s Packet has no inner IPv6 header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING)
+        goto decap;
+
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    if ( srh->segments_left > 0 ) {
+        save = 1;
+        srh->segments_left--;
+        iph->daddr = *(srh->segments + srh->segments_left);
+    }
+
+decap:
+    if (decap6(skb, s6, inneroff, srhoff, save) != 0)
+        goto drop;
+
+    if (xcon6(skb, s6) != 0)
+        debug_err("%s packet forwarding failed.\n", err_msg);
+    return 0;
+
+drop:
+    kfree(skb);
+    return -1;
+}
+
+/**
+ * end_am_masq()
+ * SRv6 Endpoint to SR-unaware APP via masquerading behavior
+ * @skb: packet buffer
+ * @s6: localsid table entry
+ */
+
+int end_am_masq(struct sk_buff * skb, struct sid6_info * s6)
+{
+    int  srhoff = 0, srhproto;
+    struct ipv6hdr* iph;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    char * err_msg = "end_am_masq - ";
+
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING) {
+        debug_err("%s Packet has no routing extension header, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    if ( srh->segments_left <= 0 ) {
+        debug_err("%s End.AM can not be the last SID, segments_left = 0, dropped.\n", err_msg);
+        update_counters(s6, skb->len, 0);
+        goto drop;
+    }
+
+    srh->segments_left--;
+    iph = ipv6_hdr(skb);
+    iph->hop_limit --;
+    iph->daddr = *srh->segments;
+
+    if ((sdev_add(s6->iif, s6->behavior, skb, 0, 0)) != 0)
+        goto drop;
+
+    if (xcon6(skb, s6) != 0)
+        printk("%s %s \n", err_msg, "packet sent to the VNF !!!!! failed");
+
+    return 0;
+drop:
+    kfree(skb);
+    return -1;
+}
+
+/**
+ * end_am_demasq()
+ * Demasquerades packets coming from a VNF
+ * @skb: packet buffer
+ * @sdev: srdev table entry
+ */
+
+int end_am_demasq(struct sk_buff * skb, struct sdev_info * sdev)
+{
+    int  ret = 0;
+    int  srhoff = 0, srhproto;
+    struct ipv6hdr* iph;
+    struct ipv6_sr_hdr* srh;
+    struct ipv6_rt_hdr* rth_hdr;
+    struct in6_addr* next_hop = NULL;
+    char * err_msg = "end_am_demasq - ";
+
+    srhproto = ipv6_find_hdr(skb, &srhoff, NEXTHDR_ROUTING, NULL, NULL);
+    if (srhproto != NEXTHDR_ROUTING) {
+        debug_err("%s Packet has no routing extension header, dropped.\n", err_msg);
+        ret = 1;
+        goto end;
+    }
+
+    rth_hdr = (struct ipv6_rt_hdr*) (skb->data + srhoff);
+    if (rth_hdr->type != IPV6_SRCRT_TYPE_4) {
+        debug_err("%s The routing extension header is not SRH, dropped.\n", err_msg);
+        ret = 1;
+        goto end;
+    }
+
+    srh = (struct ipv6_sr_hdr*) (skb->data + srhoff);
+    iph = ipv6_hdr(skb);
+    next_hop = srh->segments + srh->segments_left;
+    iph->daddr = *next_hop;
+
+end:
+    return ret ;
+}
+
+/**
+ * sr_pre_routing()
+ * Main packet processing function
+ * called for every recieved IPv6 packet
+ * it calls the required function based on the SRv6 beahviour associated with the sid
+ */
+
+unsigned int sr_pre_routing(void* priv, struct sk_buff * skb,
+                            const struct nf_hook_state * state)
+{
+    struct ipv6hdr* iph;
+    struct icmp6hdr* icmpv6h;
+    struct sid6_info *s6;
+    struct sdev_info *sdev;
+
+    rcu_read_lock();
+    sdev = sdev_lookup(skb->dev->name);
+    if (sdev == NULL)
+        goto lookup;
+
+    if (ipv6_hdr(skb)->nexthdr == NEXTHDR_ICMP) {
+        icmpv6h = (struct icmp6hdr*) icmp6_hdr(skb);
+        if (!((icmpv6h->icmp6_type == ICMPV6_ECHO_REQUEST) || (icmpv6h->icmp6_type == ICMPV6_ECHO_REPLY)))
+            goto exit_accept;
+    }
+
+    sdev->func(skb, sdev);
+
+lookup:
+    iph = ipv6_hdr(skb);
+    s6 = sid_lookup(iph->daddr);
+    if (s6 == NULL)
+        goto exit_accept;
+
+    if ((s6->func(skb, s6)) == 1)
+        goto lookup;
+
+    goto exit_stolen;
 
 exit_accept:
-	return NF_ACCEPT;
+    rcu_read_unlock();
+    return NF_ACCEPT;
+
 exit_stolen:
-	return NF_STOLEN;
-
+    rcu_read_unlock();
+    return NF_STOLEN;
 }
 
-/*
-*******************************************************************************
-* CLI OPERATIONS CALLED BY SR_GENL.C 
-*******************************************************************************
-*/
-
-int bind_sid_north(const char *sid, const int set_operation, const char *vnf_eth, const unsigned char *mac){
-	int ret = -1; /* returns <0 if the operation did not succeed, otherwise the slot added is returned*/
-	struct in6_addr sid_addr;
-    struct net_device * local_if_struct = NULL;
-
-    debug_printk("north operation : %d\n",set_operation);
-
-	if (in6_pton(sid, strlen(sid), sid_addr.s6_addr, -1, NULL) != 1) {
-		ret = -2; /*-2: error in the SID address */
-		goto end;
-	} 
-	//may be for other operations the vnf_eth is not used, so we check for ! NULL
-	if (vnf_eth != NULL) {
-		local_if_struct = dev_get_by_name(&init_net, vnf_eth);
-		if (local_if_struct == NULL) {
-			ret = -3; /*-3: error in the interface name */
-			goto end;
-		}
-	}
-
-	write_lock_bh(&sr_rwlock);
-
-	ret = slot_to_add_north(&sid_addr); 
-	debug_printk("slot_to_add_north returns: %d\n", ret);
-	if (ret >= 0) {
-		nt_current = ret;
-		if (north_table[ret].is_set == 0) { /*we are adding a new entry*/
-			nt_size++;
-		}
-		north_table[ret].is_set = 1;
-		memcpy(&north_table[ret].vnf_ip,&sid_addr,sizeof(sid_addr));
-		north_table[ret].n_operation = set_operation;
-		if (local_if_struct!=NULL) {
-			north_table[ret].if_struct = local_if_struct;
-		}
-
-		if (mac!=NULL) {
-			memcpy(&north_table[ret].d_mac,mac,6);
-			#ifdef DEBUG
-				printk("New mac:\t");
-				print_mac(&north_table[ret].d_mac[0]);
-			#endif
-		}
-
-		debug_printk("north table size : %d\n",nt_size);
-	}
-
-	//old operations to be deleted
-//			memcpy(&vnf_ip,&sid_addr,sizeof(sid_addr));
-//			//vnf_sid = &vnf_ip;
-//
-//			n_operation = set_operation;
-//
-//			#ifdef DEBUG
-//			//printk("old mac: %x %x %x %x %x %x \n",d_mac[0],d_mac[1],d_mac[2],d_mac[3],d_mac[4],d_mac[5] );
-//			printk("Old mac:\t");
-//			print_mac(&d_mac[0]);
-//			#endif
-//			if (mac!=NULL)
-//				memcpy(&d_mac,mac,6);
-//			#ifdef DEBUG
-//			//printk("new mac: %x %x %x %x %x %x \n",d_mac[0],d_mac[1],d_mac[2],d_mac[3],d_mac[4],d_mac[5] );
-//			printk("New mac:\t");
-//			print_mac(&d_mac[0]);
-//			#endif
-	//end of old operations to be deleted
-	
-	write_unlock_bh(&sr_rwlock);
-
-end:
-	debug_printk("bind north returns: %d\n", ret);	
-
-	return ret;
-}
-EXPORT_SYMBOL(bind_sid_north);
-
-int bind_nic_south(const char *vnf_eth, const int set_operation, const char *sid){
-	int ret = -1;
-	struct in6_addr sid_addr;
-    struct net_device * local_if_struct = NULL;
-
-    debug_printk("south operation : %d\n",set_operation);
-
-	local_if_struct = dev_get_by_name(&init_net, vnf_eth);
-	
-	if (local_if_struct == NULL) {
-		ret = -3; /*-3: error in the interface name */
-		goto end;
-	} 
-
-	//may be for other operations the sid is not used, so we check for ! NULL
-	if (sid != NULL) {
-		if (in6_pton(sid, strlen(sid), sid_addr.s6_addr, -1, NULL) != 1) {
-			ret = -2; /*-2: error in the SID address */
-			goto end;
-			//if_struct = NULL;
-		} 
-	}
-
-
-	//s_operation = set_operation;
-	write_lock_bh(&sr_rwlock);
-
-	ret = slot_to_add_south(local_if_struct); 
-	debug_printk("slot_to_add_south returns: %d\n", ret);
-	if (ret >= 0) {
-		st_current = ret;
-		if (south_table[ret].is_set == 0) { /*we are adding a new entry*/
-			st_size++;
-		}
-		south_table[ret].is_set = 1;
-		south_table[ret].if_struct = local_if_struct;
-		south_table[ret].s_operation = set_operation;
-
-		//may be for other operations the sid is not used, so we check for ! NULL
-		if (sid != NULL) {
-			memcpy(&south_table[ret].south_sid,&sid_addr,sizeof(sid_addr));
-		}
-	}
-	
-	write_unlock_bh(&sr_rwlock);
-
-end:
-	debug_printk("bind south returns: %d\n", ret);	
-
-	return ret;
-}
-EXPORT_SYMBOL(bind_nic_south);
-
-int unbind_sid_north(const char *sid){
-	int ret = -1; /* returns -1 if the operation was not successfull, otherwise the slot removed is returned*/
-	struct in6_addr sid_addr;
-
-	if (in6_pton(sid, strlen(sid), sid_addr.s6_addr, -1, NULL) != 1) {
-		ret = -2; /*-2: error in the address */
-		goto end;
-	} 
-
-	write_lock_bh(&sr_rwlock);
-
-	ret = check_match_north (&sid_addr);
-	if (ret >= 0) {
-		north_table[ret].is_set = 0;
-		#ifdef LAZY_NO_LOCK
-		if (north_table[ret].sr_header_auto != NULL) {
-			kfree(north_table[ret].sr_header_auto);
-			north_table[ret].sr_header_auto = NULL;
-		}
-		#endif
-		nt_size --;
-		// I'm NOT cleaning all data
-		debug_printk("north table size : %d\n",nt_size);
-	}
-
-//		if (in6_pton(sid, strlen(sid), to_del.s6_addr, -1, NULL) == 1){	
-//			if (ipv6_addr_cmp(&to_del, &vnf_ip) == 0){
-//				/* TODO quick and dirty, implement the real one  */
-//				vnf_sid = NULL;
-//				ret = 0;
-//			}
-//		}
-	
-	write_unlock_bh(&sr_rwlock);
-
-end:
-	debug_printk("unbind north returns: %d\n", ret);	
-
-	return ret;
-}
-EXPORT_SYMBOL(unbind_sid_north);
-
-int unbind_nic_south(const char *vnf_eth){
-	int ret = -1;
-	struct net_device* to_del;
-	
-	
-	to_del = dev_get_by_name(&init_net, vnf_eth);
-	//TODO ???? The returned handle has the usage count incremented and the caller
-	//must use dev_put() to release it when it is no longer needed.
-
-	if (to_del == NULL) {
-		ret = -3; /*-3: error in the interface name */
-		goto end;
-	} 
-
-	write_lock_bh(&sr_rwlock);
-
-	ret = check_match_south (to_del);
-	if (ret >= 0) {
-		south_table[ret].is_set = 0;
-		st_size --;
-		// I'm NOT cleaning the data
-		debug_printk("south table size : %d\n",st_size);
-	}
-	write_unlock_bh(&sr_rwlock);
-
-end:
-	debug_printk("unbind south returns: %d\n", ret);	
-
-	return ret;
-}
-EXPORT_SYMBOL(unbind_nic_south);
-
-int unbind_sid_vnf(const char* sid, const char *vnf_eth){
-
-	return -1;
-}
-
-int show_north (char *dst, size_t size) {
-	//TODO IMPLEMENT CHECK ON SIZE
-	int char_used = 0;
-	int i = 0;
-	int ii = 0;
-	char * chr_p;
-
-	read_lock_bh(&sr_rwlock);
-
-	if (nt_size == 0){
-		read_unlock_bh(&sr_rwlock);
-		return 1;
-	}
-
-	for (ii = 0; ii < NT_MAXSIZE; ii++) {
-		i = (nt_current + 1 + ii ) % NT_MAXSIZE;
-		if ( north_table[i].is_set != 0) {
-			debug_printk("SID: %pI6c\n",&north_table[i].vnf_ip.s6_addr);
-			inet_ntop6((u_char *)&north_table[i].vnf_ip.s6_addr, dst, size);
-			char_used = strlen (dst);
-			dst += char_used;
-			dst += SPRINTF((dst, "\t%d", north_table[i].n_operation));
-			chr_p = &north_table[i].d_mac[0];
-			dst += SPRINTF((dst, "\t%02x:%02x:%02x:%02x:%02x:%02x\n",chr_p[0],chr_p[1],chr_p[2],chr_p[3],chr_p[4],chr_p[5] ));
-
-		}
-	}
-
-	// debug_printk("SID: %pI6c\n",&vnf_ip.s6_addr);
-	// inet_ntop6((u_char *)&vnf_ip.s6_addr, dst, size);
-	// char_used = strlen (dst);
-	// debug_printk("char_used: %d\n",char_used);
-	// dst += char_used;
-
-	// dst += SPRINTF((dst, "\t%d", n_operation));
-	// dst += SPRINTF((dst, "\t%02x:%02x:%02x:%02x:%02x:%02x\n",d_mac[0],d_mac[1],d_mac[2],d_mac[3],d_mac[4],d_mac[5] ));
-
-
-	read_unlock_bh(&sr_rwlock);
-
-
-	return 1;
-}
-
-int show_south (char *dst, size_t size) {
-	//TODO IMPLEMENT CHECK ON SIZE
-	//int char_used = 0;
-	int i = 0;
-	int ii = 0;
-
-	read_lock_bh(&sr_rwlock);
-
-	if (st_size == 0){
-		read_unlock_bh(&sr_rwlock);
-		return 1;
-	}
-
-	//debug_printk("SID: %pI6c\n",&vnf_ip.s6_addr);
-	//inet_ntop6((u_char *)&vnf_ip.s6_addr, dst, size);
-	//char_used = strlen (dst);
-	//debug_printk("char_used: %d\n",char_used);
-	//dst += char_used;
-
-	for (ii = 0; ii < ST_MAXSIZE; ii++) {
-		i = (st_current + 1 + ii ) % ST_MAXSIZE;
-		if ( south_table[i].is_set != 0) {
-			dst += SPRINTF((dst, south_table[i].if_struct->name ));
-			dst += SPRINTF((dst, "\t%d\t", south_table[i].s_operation));
-			inet_ntop6((u_char *)&south_table[i].south_sid.s6_addr, dst, size);
-			dst += strlen (dst);
-			dst += SPRINTF((dst, "\n"));
-		}
-	}
-
-
-	read_unlock_bh(&sr_rwlock);
-
-
-	return 1;
-}
-
-
-
-/*
-*******************************************************************************
-* INITIALIZATION AND EXIT FUNCTIONS
-*******************************************************************************
-*/
-
-
-/* Initialization function */
-int sr_vnf_init(void) {
-	int ret = 0;
-
-	printk(KERN_ALERT "Loading module %s.......\n", DESC);
-
-	memset(&north_table , 0, sizeof(north_table));
-	memset(&south_table , 0, sizeof(south_table));
-	
-	/*printk("mac: %x\n", north_table[0].d_mac[0]);*/
-
-
-	/* Integration with netlink module */
-	ret = sr_genl_register();
-	if (ret < 0)
-		return ret;
-	rwlock_init(&sr_rwlock);
-	/* Register the filtering function */
-	sr_ops_pre.hook = sr_pre_routing;
-	sr_ops_pre.pf = PF_INET6;
-	sr_ops_pre.hooknum = NF_INET_PRE_ROUTING;
-	sr_ops_pre.priority = NF_IP_PRI_LAST;
-
-	/* register NF_IP_PRE_ROUTING hook */
-	ret = nf_register_hook(&sr_ops_pre);
-
-	if (ret < 0) {
-		printk(KERN_INFO "Sorry, registering %s failed with %d \n", DESC , ret);
+/***************************************************************************************************
+****************************** INITIALIZATION AND EXIT FUNCTIONS  **********************************
+***************************************************************************************************/
+
+/**
+ * srext_init()
+ * SREXT initialization function
+ */
+
+int srext_init(void)
+{
+    int ret = 0;
+
+    printk(KERN_INFO "Loading module %s.......\n", DESC);
+    hash_init (sid_tbl);
+    hash_init (sdev_tbl);
+
+    /* Integration with netlink module */
+    ret = sr_genl_register();
+    if (ret < 0)
         return ret;
-	}
-	printk(KERN_INFO "SREXT module registered (%d)!\n", ret);
-	 return 0;
+
+    ret = hook_v4_register();
+    if (ret < 0) {
+        sr_genl_unregister();
+        return ret;
+    }
+
+    rwlock_init(&sr_rwlock);
+
+    /* Register the filtering function */
+    sr_ops_pre.hook = sr_pre_routing;
+    sr_ops_pre.pf = PF_INET6;
+    sr_ops_pre.hooknum = NF_INET_PRE_ROUTING;
+    sr_ops_pre.priority = NF_IP_PRI_LAST;
+
+    /* register NF_IP_PRE_ROUTING hook */
+    ret = nf_register_hook(&sr_ops_pre);
+
+    if (ret < 0) {
+        printk(KERN_INFO "Sorry, registering %s failed with %d \n", DESC , ret);
+        return ret;
+    }
+    printk(KERN_INFO "SREXT registered (%d)!\n", ret);
+    return 0;
 }
 
-#ifdef LAZY_NO_LOCK
-void kfree_all_sr_header_auto (void) {
-	int i = 0;
-	int ii = 0;
-	write_lock_bh(&sr_rwlock);
-	for (ii = 0; ii < ST_MAXSIZE; ii++) {
-		i = (st_current + ii ) % ST_MAXSIZE;
-		if (north_table[i].is_set!=0 && north_table[i].sr_header_auto != NULL) {
-			kfree(north_table[i].sr_header_auto);
-			debug_printk("%s \n","kfreed sr_header_auto");
-		}
-	}	
-	write_unlock_bh(&sr_rwlock);
-}
-#endif
+/**
+ * srext_exit()
+ * SREXT exit function
+ */
 
-/* Exit function */
-void sr_vnf_exit(void) {
-	printk(KERN_ALERT "Unloading module %s......\n", DESC);
+void srext_exit(void)
+{
+    printk(KERN_INFO "Unloading module %s......\n", DESC);
 
-	/* Integration with netlink module */
-	sr_genl_unregister();
+    /* Integration with netlink and hook_v4 modules */
+    sr_genl_unregister();
+    hook_v4_unregister();
 
-	/* Unregister the filtering function*/
-	nf_unregister_hook(&sr_ops_pre);
-	
-	#ifdef LAZY_NO_LOCK
-	kfree_all_sr_header_auto();
-//	if (sr_header_auto != NULL)
-//		kfree(sr_header_auto);
-	#endif
+    /* Unregister the filtering function*/
+    nf_unregister_hook(&sr_ops_pre);
 
-	memset(&sr_ops_pre, 0, sizeof(struct nf_hook_ops));
-	printk(KERN_INFO "SREXT module released.\n");
+    /* delete hash elements before unloading the module */
+    flush_sid_tbl();
+    memset(&sr_ops_pre, 0, sizeof(struct nf_hook_ops));
+    printk(KERN_INFO "SREXT released.\n");
 }
 
-
-
-module_init (sr_vnf_init);
-module_exit (sr_vnf_exit);
+module_init (srext_init);
+module_exit (srext_exit);

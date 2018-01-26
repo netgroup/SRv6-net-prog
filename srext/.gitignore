@@ -5,3 +5,4 @@
 Module.* 
 modules.*
 .tmp_versions
+*.o.d

@@ -5,9 +5,10 @@ default:
 
 install:
 	cp ../bin/srconf /usr/bin
-	
+
 clean:
 	rm -rf ../bin/srconf
+
 	
 deinstall:
 	rm -rf /usr/bin/srconf

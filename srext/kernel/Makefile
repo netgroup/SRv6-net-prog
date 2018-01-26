@@ -1,8 +1,7 @@
 
 
 obj-m := srext.o
-srext-m := sr_helper.o sr_hook.o sr_genl.o 
-
+srext-m := sr_hook.o sr_genl.o hook_v4.o
 INCLUDES="-I $(PWD)/../include"
 KERNELDIR := /lib/modules/$(shell uname -r)/build
 PWD:= $(shell pwd)

@@ -1,8 +1,17 @@
-/*
- * srconf.h
+
+/**
+ *  SR-IPv6 implementation
  *
- *  Created on: 07 mar 2017
- *      Author: fabbox
+ *  Authors:
+ *  Stefano Salsano <stefano.salsano@uniroma2.it>
+ *  Ahmed Abdelsalam <ahmed.abdelsalam@gssi.it>
+ *  Giuseppe Siracusano <giu.siracusano@gmail.com>
+ *
+ *
+ *  This program is free software; you can redistribute it and/or
+ *      modify it under the terms of the GNU General Public License
+ *      as published by the Free Software Foundation; either version
+ *      2 of the License, or (at your option) any later version.
  */
 
 #ifndef NET_SRCONF_H_
@@ -10,9 +19,7 @@
 
 #include "sr_genl.h"
 
-//#define MAX_BUF_LEN 4096
-
-struct genl_msg{
+struct genl_msg {
 	struct nlmsghdr n;		//128 bit = 16 bytes
 	struct genlmsghdr g;	//32  bit = 8  bytes
 
