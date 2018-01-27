@@ -225,23 +225,28 @@ SRv6 - MY LOCALSID TABLE:
 ```
 ### Running the SFC use-case
 Now it's time to run the SFC use-case, we ping the server on the egress node from the client on 
-ingress node 
-From the ingress node terminal: 
+ingress node
+
+-From the ingress node terminal: 
 ```
 $ sudo ip netns exec client ping6 b::2
 64 bytes from b::2: icmp_seq=5 ttl=63 time=0.634 ms
 64 bytes from b::2: icmp_seq=6 ttl=63 time=0.595 ms
 ```
 The server is reachable, then let's verify that the traffic is SR encapsulated as expected
-From the nfv node terminal: 
+
+-From the nfv node terminal: 
 ```
 $ sudo tcpdump -i eth1
-IP6 a::1 > 2::ad6:f1: srcrt (len=8, type=4, segleft=3[|srcrt]
+IP6 a::1 > 2::ad6:f1: srcrt (len=8, type=4, segleft=3, last-entry=3,
+	tag=0, [0]3::d6, [1]2::ad6:f3, [2]2::ad6:f2, [3]2::ad6:f1)
+	IP6 a::2 > b::2: ICMP6, echo request, seq 25, length 64
 ```
-As you can see the traffic coming to NFV node from the ingress node is SR encapsulated `type=4, segleft=3[|srcrt]`
+As you can see the traffic coming to NFV node from the ingress node is SR encapsulated type=4, segleft=3[|srcrt]
 
 Let's verify that the SR proxy behavior is working as expected 
-From the nfv node terminal: 
+
+-From the nfv node terminal: 
 ```
 $ sudo tcpdump -i veth1_2
  IP6 a::2 > b::2: ICMP6, echo request, seq 539, length 64
@@ -254,16 +259,19 @@ IP6 a::2 > b::2: ICMP6, echo request, seq 539, length 64
 ```
 The traffic going to the VNF is plain IPv6 traffic without SR encapsulation 
 Let's look at the traffic leaving the NFV node towards the egress node 
-From the nfv node terminal: 
+
+-From the nfv node terminal: 
 ```
 $ sudo tcpdump -i eth2
-IP6 a::1 > 3::d6: srcrt (len=8, type=4, segleft=0[|srcrt]
+IP6 a::1 > 3::d6: srcrt (len=8, type=4, segleft=0, last-entry=3,
+	tag=0, [0]3::d6, [1]2::ad6:f3, [2]2::ad6:f2, [3]2::ad6:f1)
+	IP6 a::2 > b::2: ICMP6, echo request, seq 229, length 64
 ```
 Here we say that the traffic is SR encapsulated again after being processed by the VNFs 
 SREXT counters 
 You can show the localsid table and to look to the counters (number of packets matched with each SID)
 
-From the nfv node terminal:
+-From the nfv node terminal:
 
 ```
 $ sudo srconf localsid show
@@ -303,15 +311,15 @@ SRv6 - MY LOCALSID TABLE:
 From the egress node terminal:
 
 ```
-$ sudo tcpdump -i veth0_3
+$ sudo tcpdump -i veth1_3
  IP6 a::2 > b::2: ICMP6, echo request, seq 539, length 64
 ```
 
 ### Notes 
-Resources assigned to any of the VMs can be customized by modifying Vagrantfile 
+--Resources assigned to any of the VMs can be customized by modifying Vagrantfile 
 ```
  virtualbox.memory = "1024"
  virtualbox.cpus = "1"
 ```
-Start-up configuration of ingress node, NFV node, or egress node can be customized by modifying 
+--Start-up configuration of ingress node, NFV node, or egress node can be customized by modifying 
 the scripts in the vagrant-box folder.
