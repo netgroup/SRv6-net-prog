@@ -11,6 +11,9 @@
 # Create client
 ./vnf-single_iface.sh add client veth1_1 inet6 a::1/64 a::2/64
 
+# Configure Routing 
+sudo ip -6 route add 2::/64 via 1:2::2
+
 # Configure SFC SRv6 policy
 sudo ip -6 route add b::/64 via 1:2::2 encap seg6 mode encap segs 2::AD6:F1,2::AD6:F2,2::AD6:F3,3::D6
 

@@ -37,7 +37,7 @@ Vagrant.configure("2") do |config|
 	# gress node configuration
 	config.vm.define "egress" do |egress|
 		egress.vm.box = "srv6-net-prog"
-		egress.vm.network "private_network", ip: "2:3::3", virtualbox__intnet: "nvf-egr"
+		egress.vm.network "private_network", ip: "2:3::3", virtualbox__intnet: "nfv-egr"
 		egress.vm.provider "virtualbox" do |virtualbox|
 			virtualbox.memory = "512"
 			virtualbox.cpus = "1"

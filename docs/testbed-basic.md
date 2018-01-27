@@ -63,7 +63,7 @@ $ vagrant box add srv6-net-prog http://cs.gssi.infn.it/files/SFC/srv6-net-prog.b
 ```
 Start the testbed:
 ```
-$ cd srv6-net-prog
+$ cd SRv6-net-prog/vagrant-box/testbed1/
 $ vagrant up 
 ```
 It takes a bit of time, please be patient .......
@@ -73,12 +73,15 @@ Now we have the three VMs running with srext installed, So let's configure them 
 ### Ingress node setup 
 Open a new terminal and log into the ingress node: 
 ```
-$ vagrant ssh nfv 
+$ vagrant ssh ingress 
 ```
+
+Make sure that you run ssh command from SRv6-net-prog/vagrant-box/testbed1/
+
 Run the ingress node setup script: 
 ```
-$ cd /vagrant/srext/scripts
-$ sudo ./setup_ingress_node.sh 
+$ cd SRv6-net-prog/srext/scripts/testbed1/
+$ sudo ./setup_ingress_testbed1.sh
 ```
 The ingress setup script does the following:
 1. Creates a network namespace that will be used as a client
@@ -106,7 +109,7 @@ SRv6 - MY LOCALSID TABLE:
 	 SID     :        1::d6
 	 Behavior:        end.dx6
 	 Next hop:        a::2
-	 OIF     :        veth0_1
+	 OIF     :        veth1_1
 	 Good traffic:    [0 packets : 0  bytes]
 	 Bad traffic:     [0 packets : 0  bytes]
 ----------------------------------------------------
@@ -116,10 +119,12 @@ Open a new terminal and log into the NFV node:
 ```
 $ vagrant ssh nfv 
 ```
+Make sure that you run ssh command from SRv6-net-prog/vagrant-box/testbed1/
+
 Run the nfv node setup script: 
 ```
-$ cd /vagrant/srext/scripts
-$ sudo ./setup_nfv_node.sh 
+$ cd SRv6-net-prog/srext/scripts/testbed1/
+$ sudo ./setup_nfv_testbed1.sh
 ```
 The nfv setup script does the following:
 1. Creates three network namespaces that will be used as SR-unaware VNFS(SCs)
@@ -180,10 +185,13 @@ Open a new terminal and log into the egress node:
 ```
 $ vagrant ssh egress 
 ```
+
+Make sure that you run ssh command from SRv6-net-prog/vagrant-box/testbed1/
+
 Run the egress node setup script: 
 ```
-$ cd /vagrant/srext/scripts
-$ sudo ./setup_egress_node.sh 
+$ cd SRv6-net-prog/srext/scripts/testbed1/
+$ sudo ./setup_egress_testbed1.sh
 ```
 The egress setup script does the following:
 1. Creates a network namespace that will be used as a server
@@ -210,7 +218,7 @@ SRv6 - MY LOCALSID TABLE:
 	 SID     :        3::d6
 	 Behavior:        end.dx6
 	 Next hop:        b::2
-	 OIF     :        veth0_3
+	 OIF     :        veth1_3
 	 Good traffic:    [0 packets : 0  bytes]
 	 Bad traffic:     [0 packets : 0  bytes]
 ------------------------------------------------------
@@ -218,7 +226,6 @@ SRv6 - MY LOCALSID TABLE:
 ### Running the SFC use-case
 Now it's time to run the SFC use-case, we ping the server on the egress node from the client on 
 ingress node 
-
 From the ingress node terminal: 
 ```
 $ sudo ip netns exec client ping6 b::2
@@ -226,7 +233,7 @@ $ sudo ip netns exec client ping6 b::2
 64 bytes from b::2: icmp_seq=6 ttl=63 time=0.595 ms
 ```
 The server is reachable, then let's verify that the traffic is SR encapsulated as expected
-- From the nfv node terminal: 
+From the nfv node terminal: 
 ```
 $ sudo tcpdump -i eth1
 IP6 a::1 > 2::ad6:f1: srcrt (len=8, type=4, segleft=3[|srcrt]
@@ -234,8 +241,7 @@ IP6 a::1 > 2::ad6:f1: srcrt (len=8, type=4, segleft=3[|srcrt]
 As you can see the traffic coming to NFV node from the ingress node is SR encapsulated `type=4, segleft=3[|srcrt]`
 
 Let's verify that the SR proxy behavior is working as expected 
-
-- From the nfv node terminal: 
+From the nfv node terminal: 
 ```
 $ sudo tcpdump -i veth1_2
  IP6 a::2 > b::2: ICMP6, echo request, seq 539, length 64
@@ -248,16 +254,16 @@ IP6 a::2 > b::2: ICMP6, echo request, seq 539, length 64
 ```
 The traffic going to the VNF is plain IPv6 traffic without SR encapsulation 
 Let's look at the traffic leaving the NFV node towards the egress node 
-- From the nfv node terminal: 
+From the nfv node terminal: 
 ```
 $ sudo tcpdump -i eth2
 IP6 a::1 > 3::d6: srcrt (len=8, type=4, segleft=0[|srcrt]
 ```
 Here we say that the traffic is SR encapsulated again after being processed by the VNFs 
--- SREXT counters 
+SREXT counters 
 You can show the localsid table and to look to the counters (number of packets matched with each SID)
 
-- From the nfv node terminal:
+From the nfv node terminal:
 
 ```
 $ sudo srconf localsid show
@@ -293,16 +299,19 @@ SRv6 - MY LOCALSID TABLE:
 	 Bad traffic:     [0 packets : 0  bytes]
 ------------------------------------------------------
 ```
-- From the egress node terminal:
+
+From the egress node terminal:
+
 ```
 $ sudo tcpdump -i veth0_3
  IP6 a::2 > b::2: ICMP6, echo request, seq 539, length 64
 ```
+
 ### Notes 
-- Resources assigned to any of the VMs can be customized by modifying Vagrantfile 
+Resources assigned to any of the VMs can be customized by modifying Vagrantfile 
 ```
  virtualbox.memory = "1024"
  virtualbox.cpus = "1"
 ```
-- Start-up configuration of ingress node, NFV node, or egress node can be customized by modifying 
+Start-up configuration of ingress node, NFV node, or egress node can be customized by modifying 
 the scripts in the vagrant-box folder.
