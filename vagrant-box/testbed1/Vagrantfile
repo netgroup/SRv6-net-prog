@@ -1,0 +1,49 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+	# ssh configuration 
+	config.ssh.username = "sr6"
+	config.ssh.password = "sr6"
+
+	# ingress node configuration
+	config.vm.define "ingress" do |ingress|
+		ingress.vm.box = "srv6-net-prog"
+		ingress.vm.network "private_network", ip: "1:2::1", virtualbox__intnet: "ing-nfv"
+		ingress.vm.provider "virtualbox" do |virtualbox|
+			virtualbox.memory = "512"
+			virtualbox.cpus = "1"
+			virtualbox.customize ['modifyvm', :id, '--cableconnected1', 'on']
+			virtualbox.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]
+		end
+	ingress.vm.provision "shell", path: "ingress.sh"
+	end
+
+	# nfv node configuration 
+	config.vm.define "nfv" do |nfv|
+		nfv.vm.box = "srv6-net-prog"
+		nfv.vm.network "private_network", ip: "1:2::2", virtualbox__intnet: "ing-nfv"
+		nfv.vm.network "private_network", ip: "2:3::2", virtualbox__intnet: "nfv-egr"
+		nfv.vm.provider "virtualbox" do |virtualbox|
+			virtualbox.memory = "512"
+			virtualbox.cpus = "1"
+			virtualbox.customize ['modifyvm', :id, '--cableconnected1', 'on']
+			virtualbox.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]
+			virtualbox.customize ["modifyvm", :id, "--nicpromisc3", "allow-all"]
+		end
+	nfv.vm.provision "shell", path: "nfv.sh"
+	end
+
+	# gress node configuration
+	config.vm.define "egress" do |egress|
+		egress.vm.box = "srv6-net-prog"
+		egress.vm.network "private_network", ip: "2:3::3", virtualbox__intnet: "nvf-egr"
+		egress.vm.provider "virtualbox" do |virtualbox|
+			virtualbox.memory = "512"
+			virtualbox.cpus = "1"
+			virtualbox.customize ['modifyvm', :id, '--cableconnected1', 'on']
+			virtualbox.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]
+		end
+	egress.vm.provision "shell", path: "egress.sh"
+	end
+end
