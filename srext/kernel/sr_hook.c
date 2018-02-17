@@ -2305,7 +2305,7 @@ int srext_init(void)
     sr_ops_pre.priority = NF_IP_PRI_LAST;
 
     /* register NF_IP_PRE_ROUTING hook */
-    ret = nf_register_hook(&sr_ops_pre);
+    ret = nf_register_net_hook(&init_net,&sr_ops_pre);
 
     if (ret < 0) {
         printk(KERN_INFO "Sorry, registering %s failed with %d \n", DESC , ret);
@@ -2329,7 +2329,7 @@ void srext_exit(void)
     hook_v4_unregister();
 
     /* Unregister the filtering function*/
-    nf_unregister_hook(&sr_ops_pre);
+    nf_unregister_net_hook(&init_net,&sr_ops_pre);
 
     /* delete hash elements before unloading the module */
     flush_sid_tbl();

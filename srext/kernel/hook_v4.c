@@ -109,7 +109,7 @@ int hook_v4_register(void)
     hook_v4_ops_pre.priority = NF_IP_PRI_LAST;
 
     /* register NF_IP_PRE_ROUTING hook */
-    ret = nf_register_hook(&hook_v4_ops_pre);
+    ret = nf_register_net_hook(&init_net,&hook_v4_ops_pre);
 
     if (ret < 0) {
         printk(KERN_INFO "Sorry, registering %s failed with %d \n", DESC , ret);
@@ -127,7 +127,7 @@ int hook_v4_register(void)
 int hook_v4_unregister(void)
 {
     /* Unregister the filtering function*/
-    nf_unregister_hook(&hook_v4_ops_pre);
+    nf_unregister_net_hook(&init_net,&hook_v4_ops_pre);
     memset(&hook_v4_ops_pre, 0, sizeof(struct nf_hook_ops));
     printk(KERN_INFO "HOOK_V4 released.\n");
     return 0;
