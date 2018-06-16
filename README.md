@@ -15,7 +15,7 @@ packet matches an entry in the local SID table, the associated behavior is appli
 packet will go through the kernel's routing sub-system for normal processing.
 
 SREXT support most endpoint behaviors of the [I-D.ietf-spring-srv6-network-programming](https://tools.ietf.org/html/draft-filsfils-spring-srv6-network-programming) by associating a different function to different 
-SRv6 segments. The foolowing table summarize the currently implemented SRv6 endpoint behaviors. 
+SRv6 segments. The following table summarize the currently implemented SRv6 endpoint behaviors. 
 ```
 +-------------+--------------------------------------------------------------------------------+
 | BEHAVIOR    |                                  Desription                                    |
@@ -36,9 +36,9 @@ SRv6 segments. The foolowing table summarize the currently implemented SRv6 endp
 |-------------+--------------------------------------------------------------------------------+
 |  End.AM     | Endpoint to SR-unaware APP via masquerading                                    |
 |-------------+--------------------------------------------------------------------------------+
-|  End.EAD4   | Extended End.AD4 behavior that allow Sr-uanware VNFS to be the last SF in SFC  |
+|  End.EAD4   | Extended End.AD4 behavior that allow SR-unaware VNFS to be the last SF in SFC  |
 |-------------+--------------------------------------------------------------------------------+
-|  End.EAD6   | Extended End.AD6 behavior that allow Sr-uanware VNFS to be the last SF in SFC  |
+|  End.EAD6   | Extended End.AD6 behavior that allow SR-unaware VNFS to be the last SF in SFC  |
 +-------------+--------------------------------------------------------------------------------+
 ```
 
