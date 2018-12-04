@@ -1870,8 +1870,6 @@ int end_ad4(struct sk_buff * skb, struct sid6_info * s6)
     char * err_msg = "end_ad4- ";
 
     innerproto = ipv6_find_hdr(skb, &inneroff, -1, NULL, NULL);
-    printk(" ip proto = %d \n ", innerproto);
-    printk(" offset  = %d \n ", inneroff);
 
     if (innerproto != IPPROTO_IPIP) {
         debug_err("%s Packet has no inner IPv4 header, dropped.\n", err_msg);
