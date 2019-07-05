@@ -298,7 +298,7 @@ int xcon4(struct sk_buff * skb, struct sid6_info * s6)
     struct neighbour *neigh;
     const struct hh_cache *hh;
     u32 nexthop;
-    char * err_msg = "xcon6 - ";
+    char * err_msg = "xcon4 - ";
 
     if (s6->oif == NULL) {
         debug_err("%s Can't send to NULL \n", err_msg);
@@ -1516,7 +1516,7 @@ int clear_counters_sid(const char *sid)
     int ret = 0;
     struct sid6_info *s6;
     struct in6_addr clear_sid;
-    char * err_msg = "clear_sid_counters - ";
+    char * err_msg = "clear_counters_sid - ";
 
     write_lock_bh(&sr_rwlock);
     if (in6_pton(sid, strlen(sid), clear_sid.s6_addr, -1, NULL) != 1) {
@@ -1938,7 +1938,7 @@ int end_ead4(struct sk_buff * skb, struct sid6_info * s6)
     struct ipv6hdr* iph;
     struct ipv6_sr_hdr* srh;
     struct ipv6_rt_hdr* rth_hdr;
-    char * err_msg = "end_ead6 - ";
+    char * err_msg = "end_ead4 - ";
     int save = 0;
 
     iph = ipv6_hdr(skb);
