@@ -4,6 +4,8 @@ SREXT is a kernel module providing the basic Segment Routing functions in additi
 ones. It can be used as a standalone SRv6 implementation or as a complement to the existing SRv6 
 kernel implementation (kernel 4.10 and later kernels). 
 
+This is the [project web page](https://github.com/netgroup/SRv6-net-prog/), part of the [ROSE](https://netgroup.github.io/rose/) project.
+
 SREXT supports “my local SID table” which contains the local SRv6 segments explicitly instantiated 
 in the node and associates each SID with a function. The local SID table is completely independent 
 from the Linux routing table and contains only SRv6 segments. Each entry of the localsid table is an
