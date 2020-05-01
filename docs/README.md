@@ -1,12 +1,13 @@
-# SRv6 Network Programming in Linux
+# SRext
+
+### Segment Routing Extension Linux kernel module
 
 The “SRv6 Network Programming” is a new paradigm (see the [IETF draft](https://tools.ietf.org/html/draft-filsfils-spring-srv6-network-programming)) to support advanced services in IPv6 networks. It relies on the capability to compose complex network service by chaining individual functions distributed through the SRv6 network and to represent the chains with Segment Routing headers that are included in the IPv6 packet headers.
 
-### srext - Segment Routing Extension Linux kernel module
 We are implementing the SRv6 Network Programming model in the _srext_ Linux kernel module, supported by a CLI based configuration application called _srconf_. See our public [code repository](https://github.com/netgroup/SRv6-net-prog).
 
 ### Chaining of SRv6-unaware VNFs 
-We implemented a [testbed](testbed-basic.md) for a SFC use case (chaining of SR-unaware VNFs using SRv6). The testbed can be easily replicated using Vagrant/VirtualBox.
+We implemented a [testbed](testbed-basic.md) for an SFC use case (chaining of SR-unaware VNFs using SRv6). The testbed can be easily replicated using Vagrant/VirtualBox.
 
 ### Scientific papers, technical reports, IETF drafts, Slides
 
