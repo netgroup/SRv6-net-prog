@@ -1,6 +1,6 @@
-# SRext
+# SREXT
 
-### Segment Routing Extension Linux kernel module
+### Segment Routing EXTension Linux kernel module
 
 The “SRv6 Network Programming” is a new paradigm (see the [IETF draft](https://tools.ietf.org/html/draft-filsfils-spring-srv6-network-programming)) to support advanced services in IPv6 networks. It relies on the capability to compose complex network service by chaining individual functions distributed through the SRv6 network and to represent the chains with Segment Routing headers that are included in the IPv6 packet headers.
 
