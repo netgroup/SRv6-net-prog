@@ -34,7 +34,7 @@ Vagrant.configure("2") do |config|
 	nfv.vm.provision "shell", path: "nfv.sh"
 	end
 
-	# gress node configuration
+	# egress node configuration
 	config.vm.define "egress" do |egress|
 		egress.vm.box = "srv6-net-prog"
 		egress.vm.network "private_network", ip: "2:3::3", virtualbox__intnet: "nfv-egr"
