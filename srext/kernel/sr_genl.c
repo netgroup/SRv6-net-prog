@@ -41,15 +41,6 @@ char *err_str[] = {"SREXT answers: OK.",
                    "SREXT answers: [ERROR]: Table doesn't exist."
                   };
 
-static struct genl_family sr_gnl_family = {
-    //.id = GENL_ID_GENERATE,
-    //.id = 0,
-    .hdrsize = 0,
-    .name = SR_GNL_FAMILY_NAME,
-    .version = SR_GNL_FAMILY_VERSION,
-    .maxattr = SR_A_MAX,
-};
-
 static struct nla_policy sr_genl_policy[_SR_A_MAX + 1] = {
     [SR_A_UNSPEC]       =   { .type = NLA_STRING },
     [SR_A_TABLE]        =   { .type = NLA_STRING },
@@ -62,6 +53,16 @@ static struct nla_policy sr_genl_policy[_SR_A_MAX + 1] = {
     [SR_A_OIF]          =   { .type = NLA_STRING },
     [SR_A_RESPONSE]     =   { .type = NLA_STRING },
     [SR_A_RESPONSE_LST] =   { .type = NLA_STRING }
+};
+
+static struct genl_family sr_gnl_family = {
+    //.id = GENL_ID_GENERATE,
+    //.id = 0,
+    .hdrsize = 0,
+    .name = SR_GNL_FAMILY_NAME,
+    .version = SR_GNL_FAMILY_VERSION,
+    .maxattr = SR_A_MAX,
+    .policy = sr_genl_policy,
 };
 
 static void set_msg_data(struct genl_msg_data *msg_data, int type,
@@ -584,35 +585,30 @@ static struct genl_ops nvf_genl_ops[] = {
     {
         .cmd = SR_C_ADD,
         .flags = 0,
-        .policy = sr_genl_policy,
         .doit = sr_genl_dispatcher,
         .dumpit = NULL,
     },
     {
         .cmd = SR_C_DEL,
         .flags = 0,
-        .policy = sr_genl_policy,
         .doit = sr_genl_dispatcher,
         .dumpit = NULL,
     },
     {
         .cmd = SR_C_SHOW,
         .flags = 0,
-        .policy = sr_genl_policy,
         .doit = sr_genl_dispatcher,
         .dumpit = NULL,
     },
     {
         .cmd = SR_C_FLUSH,
         .flags = 0,
-        .policy = sr_genl_policy,
         .doit = sr_genl_dispatcher,
         .dumpit = NULL,
     },
     {
         .cmd = SR_C_CLEAR,
         .flags = 0,
-        .policy = sr_genl_policy,
         .doit = sr_genl_dispatcher,
         .dumpit = NULL,
     }
