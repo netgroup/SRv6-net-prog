@@ -59,7 +59,7 @@ static struct nla_policy sr_genl_policy[_SR_A_MAX + 1] = {
     [SR_A_NEXT]         =   { .type = NLA_STRING },
     [SR_A_MAC]          =   { .type = NLA_BINARY },
     [SR_A_OIF]          =   { .type = NLA_STRING },
-    [SR_A_OIF]          =   { .type = NLA_STRING },
+    [SR_A_IIF]          =   { .type = NLA_STRING },
     [SR_A_RESPONSE]     =   { .type = NLA_STRING },
     [SR_A_RESPONSE_LST] =   { .type = NLA_STRING }
 };
